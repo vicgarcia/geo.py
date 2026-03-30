@@ -49,6 +49,13 @@ geo.py ip              # Your IP
 geo.py ip 8.8.8.8      # Specific IP
 ```
 
+### bbox
+Calculate bounding box from center + radius (returns GeoJSON):
+```bash
+geo.py bbox --center "NYC" --radius 5 --unit km
+geo.py bbox --center "40.7128,-74.006" --radius 1 --unit miles --json --geojson
+```
+
 ## Smart Location Parsing
 
 Commands that accept locations understand both formats:

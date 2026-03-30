@@ -46,6 +46,9 @@ Examples:
   geo.py ip
   geo.py ip 8.8.8.8
 
+  geo.py bbox --center "NYC" --radius 5 --unit km
+  geo.py bbox --center "40.7128,-74.006" --radius 1 --unit miles --json --geojson
+
 Smart Location Parsing:
   Most commands accept either raw coordinates or addresses:
     "40.7128,-74.0060"     Raw lat,lng (comma or space separated)
@@ -285,6 +288,66 @@ class GeoClient:
                 "latitude": round(dest.latitude, 6),
                 "longitude": round(dest.longitude, 6),
             },
+        }
+
+    def calculate_bbox(
+        self,
+        center_lat: float,
+        center_lng: float,
+        radius_km: float
+    ) -> dict:
+        """
+        Calculate bounding box from center point and radius.
+
+        Returns dict with bounds and GeoJSON representation.
+        """
+        center = Point(center_lat, center_lng)
+
+        # Calculate the four cardinal points
+        north = geodesic(kilometers=radius_km).destination(center, 0)
+        south = geodesic(kilometers=radius_km).destination(center, 180)
+        east = geodesic(kilometers=radius_km).destination(center, 90)
+        west = geodesic(kilometers=radius_km).destination(center, 270)
+
+        min_lat = round(south.latitude, 6)
+        max_lat = round(north.latitude, 6)
+        min_lng = round(west.longitude, 6)
+        max_lng = round(east.longitude, 6)
+
+        # GeoJSON bbox is [west, south, east, north] = [minLng, minLat, maxLng, maxLat]
+        bbox = [min_lng, min_lat, max_lng, max_lat]
+
+        # GeoJSON Polygon (coordinates are [lng, lat] order)
+        geojson = {
+            "type": "Feature",
+            "bbox": bbox,
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [[
+                    [min_lng, min_lat],  # SW
+                    [max_lng, min_lat],  # SE
+                    [max_lng, max_lat],  # NE
+                    [min_lng, max_lat],  # NW
+                    [min_lng, min_lat],  # SW (close)
+                ]]
+            },
+            "properties": {
+                "center": {"latitude": center_lat, "longitude": center_lng},
+                "radius_km": radius_km,
+            }
+        }
+
+        return {
+            "center": {"latitude": center_lat, "longitude": center_lng},
+            "radius_km": radius_km,
+            "bounds": {
+                "north": max_lat,
+                "south": min_lat,
+                "east": max_lng,
+                "west": min_lng,
+            },
+            "bbox": bbox,
+            "geojson": geojson,
         }
 
     def geolocate_ip(self, ip: Optional[str] = None) -> dict:
@@ -656,6 +719,74 @@ def cmd_ip(client: GeoClient, args: argparse.Namespace) -> int:
         return 1
 
 
+def cmd_bbox(client: GeoClient, args: argparse.Namespace) -> int:
+    """Handle the bbox command."""
+    try:
+        # Parse center location (smart parsing)
+        center_lat, center_lng, center_addr = client.parse_location(args.center)
+
+        # Convert radius to km based on unit
+        radius = args.radius
+        unit = args.unit.lower()
+
+        if unit in ("mi", "miles"):
+            radius_km = radius * 1.60934
+        elif unit in ("km", "kilometers"):
+            radius_km = radius
+        elif unit in ("m", "meters"):
+            radius_km = radius / 1000
+        elif unit in ("ft", "feet"):
+            radius_km = radius * 0.0003048
+        else:
+            radius_km = radius * 1.60934  # default to miles
+
+        result = client.calculate_bbox(center_lat, center_lng, radius_km)
+        maps_url = _maps_url(center_lat, center_lng)
+
+        if args.json:
+            import json
+            # Return just the GeoJSON if requested
+            if args.geojson:
+                print(json.dumps(result["geojson"], indent=2))
+            else:
+                result["maps_url"] = maps_url
+                if center_addr:
+                    result["center"]["address"] = center_addr
+                print(json.dumps(result, indent=2))
+        else:
+            center_display = center_addr or f"{center_lat}, {center_lng}"
+            b = result["bounds"]
+            bbox_str = f"{b['west']},{b['south']},{b['east']},{b['north']}"
+
+            print(f"\n  Bounding Box")
+            print("  " + "=" * 58)
+            print(f"  Center:     {center_display}")
+            if center_addr:
+                print(f"              ({center_lat}, {center_lng})")
+            print(f"  Radius:     {args.radius} {args.unit}")
+            print(f"  Map:        {maps_url}")
+            print()
+            print(f"  Bounds:")
+            print(f"    North:    {b['north']}")
+            print(f"    South:    {b['south']}")
+            print(f"    East:     {b['east']}")
+            print(f"    West:     {b['west']}")
+            print()
+            print(f"  bbox:       {bbox_str}")
+            print()
+
+            if args.geojson:
+                import json
+                print("  GeoJSON:")
+                print(json.dumps(result["geojson"], indent=2))
+                print()
+
+        return 0
+    except GeoError as e:
+        print(f"Error: {e}")
+        return 1
+
+
 # ============================================================================
 # Main CLI
 # ============================================================================
@@ -811,6 +942,40 @@ def main() -> int:
         help="Output as JSON"
     )
 
+    # bbox command
+    bbox_parser = subparsers.add_parser(
+        "bbox",
+        help="Calculate bounding box from center and radius",
+        description="Calculate a bounding box given a center point and radius. Returns GeoJSON."
+    )
+    bbox_parser.add_argument(
+        "--center", "-c",
+        required=True,
+        help="Center point (coordinates or address)"
+    )
+    bbox_parser.add_argument(
+        "--radius", "-r",
+        type=float,
+        required=True,
+        help="Radius from center"
+    )
+    bbox_parser.add_argument(
+        "--unit", "-u",
+        default="miles",
+        choices=["mi", "miles", "km", "kilometers", "m", "meters", "ft", "feet"],
+        help="Radius unit (default: miles)"
+    )
+    bbox_parser.add_argument(
+        "--geojson", "-g",
+        action="store_true",
+        help="Output GeoJSON only (with --json) or include GeoJSON (without --json)"
+    )
+    bbox_parser.add_argument(
+        "--json", "-j",
+        action="store_true",
+        help="Output as JSON"
+    )
+
     # Parse args
     args = parser.parse_args()
 
@@ -829,6 +994,7 @@ def main() -> int:
         "destination": cmd_destination,
         "validate": cmd_validate,
         "ip": cmd_ip,
+        "bbox": cmd_bbox,
     }
 
     handler = commands.get(args.command)
