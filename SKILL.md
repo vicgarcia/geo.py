@@ -64,11 +64,11 @@ Commands that accept locations understand both formats:
 
 ## Maps Links
 
-All commands that return coordinates include a `maps_url` field - a clickable link that opens the location in a maps application. **Always provide this URL to the user** so they can visualize the location.
+All commands that return coordinates include a `maps_url` field - a Google Maps link to view the location. **Always provide this URL to the user as a clickable markdown link** so they can visualize the location.
 
 Example output:
 ```
-Map: maps://?ll=40.7827725,-73.9653627&z=18
+Map: https://www.google.com/maps?q=40.7827725,-73.9653627
 ```
 
 In JSON output:
@@ -76,8 +76,13 @@ In JSON output:
 {
   "latitude": 40.7827725,
   "longitude": -73.9653627,
-  "maps_url": "maps://?ll=40.7827725,-73.9653627&z=18"
+  "maps_url": "https://www.google.com/maps?q=40.7827725,-73.9653627"
 }
+```
+
+**For chat sessions:** Format the URL as a clickable markdown link for the user:
+```
+[View on Google Maps](https://www.google.com/maps?q=40.7827725,-73.9653627)
 ```
 
 ## JSON Output

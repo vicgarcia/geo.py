@@ -413,8 +413,8 @@ def _format_distance(distance: dict, unit: str) -> str:
 
 
 def _maps_url(lat: float, lng: float) -> str:
-    """Generate maps URL for coordinates."""
-    return f"maps://?ll={lat},{lng}&z=18"
+    """Generate Google Maps URL for coordinates."""
+    return f"https://www.google.com/maps?q={lat},{lng}"
 
 
 # ============================================================================
