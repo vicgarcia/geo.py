@@ -7,12 +7,13 @@ A CLI tool for working with latitude/longitude and geography. Built for agents a
 - **Geocode** - Convert addresses to coordinates
 - **Reverse Geocode** - Convert coordinates to addresses
 - **Distance** - Calculate distance between two points
+- **Route** - Turn-by-turn driving, walking, and cycling directions
 - **Destination** - Find a point given start, bearing, and distance
 - **Validate** - Check if coordinates are valid
 - **IP Geolocation** - Get location from an IP address
 - **Bounding Box** - Calculate bbox from center + radius (GeoJSON output)
 
-**No API key required.** Uses OpenStreetMap's Nominatim for geocoding and ip-api.com for IP geolocation.
+**No API key required.** Uses OpenStreetMap's Nominatim for geocoding, Valhalla (FOSSGIS) for routing, and ip-api.com for IP geolocation.
 
 ## Installation
 
@@ -88,6 +89,41 @@ Output:
   Distance:   2,450.859 mi
   Bearing:    273.69° (W)
 ```
+
+### route
+
+Get turn-by-turn directions between two or more points. Accepts coordinates or addresses.
+
+```bash
+geo.py route --from "Seattle" --to "Portland, OR"
+geo.py route --from "Times Square" --to "Central Park" --mode walking --unit km
+geo.py route --from "Boston" --to "NYC" --via "Hartford, CT"
+geo.py route --from "Seattle" --to "Bellevue, WA" --no-steps
+```
+
+Travel modes: `driving` (default), `walking`, `cycling`, `motorcycle`, `truck`.
+
+Output:
+```
+  Directions (driving)
+  ==========================================================
+  From:      Space Needle, 400, Broad Street, Seattle, Washington, United States
+  To:        Bellevue, King County, Washington, United States
+
+  Distance:   10.563 mi
+  Duration:   15m
+  Route uses: tolls, highways
+  Map:        https://www.google.com/maps/dir/?api=1&origin=47.6205131,-122.3493036&destination=47.6144219,-122.192337&travelmode=driving
+
+    1. Drive northeast.
+       0.075 mi (1m)
+    2. Turn left onto 5th Avenue North.
+       0.250 mi (45s)
+    3. Turn right onto Mercer Street.
+       0.617 mi (1m)
+```
+
+Use `--no-steps` for just the summary, and `--json` for machine-readable output.
 
 ### destination
 
@@ -240,6 +276,7 @@ geo.py geocode "NYC" --json | jq '.latitude, .longitude'
 | Feature | Service | Rate Limits |
 |---------|---------|-------------|
 | Geocoding | [Nominatim](https://nominatim.org/) (OpenStreetMap) | 1 req/sec |
+| Routing | [Valhalla](https://valhalla1.openstreetmap.de/) (FOSSGIS public instance) | fair use; 1500 km max route |
 | IP Geolocation | [ip-api.com](http://ip-api.com/) | 45 req/min |
 
 No API keys required. Please respect rate limits.
