@@ -14,6 +14,7 @@ Designed for agents and humans who need to work with geographic data.
 """
 
 import argparse
+import json
 import re
 import sys
 from typing import Optional
@@ -37,6 +38,10 @@ Examples:
   geo.py distance --from "New York" --to "Los Angeles"
   geo.py distance --from "40.7128,-74.0060" --to "34.0522,-118.2437" --unit km
 
+  geo.py route --from "Seattle" --to "Portland, OR"
+  geo.py route --from "Times Square" --to "Central Park" --mode walking
+  geo.py route --from "Boston" --to "NYC" --via "Hartford, CT" --json
+
   geo.py destination --start "40.7128,-74.0060" --bearing 270 --distance 100
   geo.py destination --start "Seattle" --bearing 180 --distance 50 --unit km
 
@@ -55,6 +60,13 @@ Smart Location Parsing:
     "40.7128 -74.0060"     Raw lat lng (space separated)
     "New York City"        Address (auto-geocoded)
     "Tokyo, Japan"         Address with region
+
+Travel Modes (route):
+  driving       Car (default)
+  walking       Pedestrian
+  cycling       Bicycle
+  motorcycle    Motorcycle
+  truck         Truck
 
 Distance Units:
   mi, miles     Miles (default)
@@ -82,6 +94,18 @@ class GeoClient:
     SIMPLE_COORD_PATTERN = re.compile(
         r'^([-+]?\d+\.?\d*)\s*[,\s]\s*([-+]?\d+\.?\d*)$'
     )
+
+    # Public Valhalla instance run by FOSSGIS - no API key or account needed
+    ROUTING_URL = "https://valhalla1.openstreetmap.de/route"
+
+    # Travel mode -> Valhalla costing model
+    COSTING_MODES = {
+        "driving": "auto",
+        "walking": "pedestrian",
+        "cycling": "bicycle",
+        "motorcycle": "motorcycle",
+        "truck": "truck",
+    }
 
     def __init__(self):
         self.geolocator = Nominatim(user_agent=USER_AGENT, timeout=10)
@@ -350,6 +374,90 @@ class GeoClient:
             "geojson": geojson,
         }
 
+    def route(
+        self,
+        waypoints: list[tuple[float, float]],
+        mode: str = "driving",
+        steps: bool = True
+    ) -> dict:
+        """
+        Get turn-by-turn directions along a list of waypoints.
+
+        waypoints: [(lat, lng), ...] in travel order, at least two.
+        mode: one of COSTING_MODES.
+        """
+        costing = self.COSTING_MODES.get(mode)
+        if not costing:
+            raise GeoError(
+                f"Unknown travel mode: {mode} "
+                f"(choose from {', '.join(sorted(self.COSTING_MODES))})"
+            )
+        if len(waypoints) < 2:
+            raise GeoError("Routing needs at least a start and an end point")
+
+        payload = {
+            "locations": [{"lat": lat, "lon": lng} for lat, lng in waypoints],
+            "costing": costing,
+            "units": "kilometers",
+        }
+
+        try:
+            response = self._session.post(
+                self.ROUTING_URL,
+                json=payload,
+                headers={"User-Agent": USER_AGENT},
+                timeout=30,
+            )
+            data = response.json()
+        except requests.RequestException as e:
+            raise GeoError(f"Routing request failed: {e}")
+        except ValueError:
+            raise GeoError("Routing service returned an invalid response")
+
+        if "error" in data:
+            raise GeoError(f"Routing failed: {data['error']}")
+
+        trip = data.get("trip") or {}
+        if not trip.get("legs"):
+            raise GeoError("No route found between these locations")
+
+        legs = []
+        traveled = 0.0
+        for leg in trip["legs"]:
+            maneuvers = []
+            raw_maneuvers = leg.get("maneuvers", [])
+            for index, m in enumerate(raw_maneuvers):
+                traveled += m.get("length", 0.0)
+                if not steps:
+                    continue
+                following = raw_maneuvers[index + 1] if index + 1 < len(raw_maneuvers) else None
+                maneuvers.append({
+                    "instruction": m.get("instruction", ""),
+                    "street": ", ".join(m.get("street_names") or []) or None,
+                    "toward": _step_toward(m, following),
+                    "exit": _step_exit(m),
+                    "toll": bool(m.get("toll")),
+                    "distance": _distance_units(m.get("length", 0.0)),
+                    "cumulative_distance": _distance_units(traveled),
+                    "duration_seconds": round(m.get("time", 0.0)),
+                })
+            legs.append({
+                "distance": _distance_units(leg["summary"]["length"]),
+                "duration_seconds": round(leg["summary"]["time"]),
+                "steps": maneuvers,
+            })
+
+        summary = trip["summary"]
+        return {
+            "mode": mode,
+            "distance": _distance_units(summary["length"]),
+            "duration_seconds": round(summary["time"]),
+            "has_toll": summary.get("has_toll", False),
+            "has_ferry": summary.get("has_ferry", False),
+            "has_highway": summary.get("has_highway", False),
+            "legs": legs,
+        }
+
     def geolocate_ip(self, ip: Optional[str] = None) -> dict:
         """
         Get geographic location from IP address.
@@ -412,9 +520,108 @@ def _format_distance(distance: dict, unit: str) -> str:
     return f"{value:,.3f} {abbrev}"
 
 
+def _distance_units(kilometers: float) -> dict:
+    """Expand a distance in kilometers into the unit dict used everywhere else."""
+    meters = kilometers * 1000
+    return {
+        "miles": round(kilometers * 0.621371, 3),
+        "kilometers": round(kilometers, 3),
+        "meters": round(meters, 3),
+        "feet": round(meters * 3.280839895, 3),
+        "nautical_miles": round(kilometers * 0.539957, 3),
+    }
+
+
+def _mentions_street(instruction: str, street: str) -> bool:
+    """
+    Check whether an instruction already names a street.
+
+    Compares against the name minus any trailing direction suffix, so
+    "onto SR 520" counts as already naming "SR 520 East".
+    """
+    if street in instruction:
+        return True
+
+    base = re.sub(r"\s+(North|South|East|West|N|S|E|W)$", "", street)
+    return bool(base) and base in instruction
+
+
+def _step_toward(maneuver: dict, following: Optional[dict]) -> Optional[str]:
+    """
+    Name the street a step puts you on, when the instruction text doesn't already.
+
+    Valhalla omits the street for unnamed segments (driveways, service roads), which
+    leaves bare instructions like "Drive northeast." Naming the road the next maneuver
+    happens on gives the step something to aim at.
+    """
+    instruction = maneuver.get("instruction", "")
+    streets = maneuver.get("street_names") or maneuver.get("begin_street_names") or []
+
+    for street in streets:
+        if not _mentions_street(instruction, street):
+            return street
+    if streets:
+        return None
+
+    # No street of its own - borrow the next maneuver's, as a "toward" hint
+    for street in (following or {}).get("street_names") or []:
+        if not _mentions_street(instruction, street):
+            return street
+    return None
+
+
+def _step_exit(maneuver: dict) -> Optional[str]:
+    """Extract the exit number from a maneuver's signage, if it has one."""
+    elements = (maneuver.get("sign") or {}).get("exit_number_elements") or []
+    instruction = maneuver.get("instruction", "")
+    numbers = [
+        e["text"] for e in elements
+        if e.get("text") and e["text"] not in instruction
+    ]
+    return ", ".join(numbers) or None
+
+
+def _format_duration(seconds: float) -> str:
+    """Format a duration in seconds as a human-readable string."""
+    seconds = int(round(seconds))
+    hours, remainder = divmod(seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+
+    if hours:
+        return f"{hours}h {minutes}m"
+    if minutes:
+        return f"{minutes}m"
+    return f"{secs}s"
+
+
 def _maps_url(lat: float, lng: float) -> str:
     """Generate Google Maps URL for coordinates."""
     return f"https://www.google.com/maps?q={lat},{lng}"
+
+
+def _directions_url(waypoints: list[tuple[float, float]], mode: str = "driving") -> str:
+    """Generate a Google Maps directions URL for a list of waypoints."""
+    travel_modes = {
+        "driving": "driving",
+        "walking": "walking",
+        "cycling": "bicycling",
+        "motorcycle": "driving",
+        "truck": "driving",
+    }
+
+    origin = f"{waypoints[0][0]},{waypoints[0][1]}"
+    destination = f"{waypoints[-1][0]},{waypoints[-1][1]}"
+    url = (
+        "https://www.google.com/maps/dir/?api=1"
+        f"&origin={origin}&destination={destination}"
+        f"&travelmode={travel_modes.get(mode, 'driving')}"
+    )
+
+    via = waypoints[1:-1]
+    if via:
+        url += "&waypoints=" + "|".join(f"{lat},{lng}" for lat, lng in via)
+
+    return url
 
 
 # ============================================================================
@@ -562,6 +769,88 @@ def cmd_distance(client: GeoClient, args: argparse.Namespace) -> int:
                 print(f"    {d['feet']:>12,.3f} feet")
                 print(f"    {d['nautical_miles']:>12,.3f} nautical miles")
                 print()
+
+        return 0
+    except GeoError as e:
+        print(f"Error: {e}")
+        return 1
+
+
+def cmd_route(client: GeoClient, args: argparse.Namespace) -> int:
+    """Handle the route command."""
+    try:
+        # Parse every stop (smart parsing), in travel order
+        stops = []
+        for location in [args.from_loc] + (args.via or []) + [args.to_loc]:
+            lat, lng, addr = client.parse_location(location)
+            stops.append({
+                "input": location,
+                "latitude": lat,
+                "longitude": lng,
+                "address": addr,
+                "maps_url": _maps_url(lat, lng),
+            })
+
+        waypoints = [(s["latitude"], s["longitude"]) for s in stops]
+        result = client.route(waypoints, mode=args.mode, steps=not args.no_steps)
+        directions_url = _directions_url(waypoints, args.mode)
+
+        if args.json:
+            result["stops"] = stops
+            result["directions_url"] = directions_url
+            print(json.dumps(result, indent=2))
+        else:
+            print(f"\n  Directions ({result['mode']})")
+            print("  " + "=" * 58)
+            for label, stop in zip(
+                ["From:"] + ["Via:"] * len(args.via or []) + ["To:"], stops
+            ):
+                display = stop["address"] or f"{stop['latitude']}, {stop['longitude']}"
+                print(f"  {label:<11}{display}")
+            print()
+            print(f"  Distance:   {_format_distance(result['distance'], args.unit)}")
+            print(f"  Duration:   {_format_duration(result['duration_seconds'])}")
+
+            flags = [
+                name for name, present in [
+                    ("tolls", result["has_toll"]),
+                    ("ferry", result["has_ferry"]),
+                    ("highways", result["has_highway"]),
+                ] if present
+            ]
+            if flags:
+                print(f"  Route uses: {', '.join(flags)}")
+            print(f"  Map:        {directions_url}")
+
+            for index, leg in enumerate(result["legs"], start=1):
+                if not leg["steps"]:
+                    continue
+                print()
+                if len(result["legs"]) > 1:
+                    print(f"  Leg {index} - {_format_distance(leg['distance'], args.unit)}"
+                          f", {_format_duration(leg['duration_seconds'])}")
+                    print("  " + "-" * 58)
+                for number, step in enumerate(leg["steps"], start=1):
+                    print(f"  {number:>3}. {step['instruction']}")
+
+                    details = []
+                    if step["toward"]:
+                        details.append(f"toward {step['toward']}")
+                    if step["exit"]:
+                        details.append(f"exit {step['exit']}")
+                    if step["toll"]:
+                        details.append("toll")
+                    if step["distance"]["meters"] >= 1:
+                        details.append(
+                            f"{_format_distance(step['distance'], args.unit)}"
+                            f" ({_format_duration(step['duration_seconds'])})"
+                        )
+                        details.append(
+                            f"{_format_distance(step['cumulative_distance'], args.unit)} total"
+                        )
+                    if details:
+                        print(f"       {' · '.join(details)}")
+            print()
 
         return 0
     except GeoError as e:
@@ -873,6 +1162,52 @@ def main() -> int:
         help="Output as JSON"
     )
 
+    # route command
+    route_parser = subparsers.add_parser(
+        "route",
+        help="Get turn-by-turn directions between two points",
+        description="Get turn-by-turn directions between two or more points."
+    )
+    route_parser.add_argument(
+        "--from", "-f",
+        dest="from_loc",
+        required=True,
+        help="Starting point (coordinates or address)"
+    )
+    route_parser.add_argument(
+        "--to", "-t",
+        dest="to_loc",
+        required=True,
+        help="Destination (coordinates or address)"
+    )
+    route_parser.add_argument(
+        "--via", "-v",
+        action="append",
+        help="Intermediate stop (coordinates or address), repeatable"
+    )
+    route_parser.add_argument(
+        "--mode", "-m",
+        default="driving",
+        choices=["driving", "walking", "cycling", "motorcycle", "truck"],
+        help="Travel mode (default: driving)"
+    )
+    route_parser.add_argument(
+        "--unit", "-u",
+        default="miles",
+        choices=["mi", "miles", "km", "kilometers", "m", "meters", "ft", "feet"],
+        help="Distance unit (default: miles)"
+    )
+    route_parser.add_argument(
+        "--no-steps", "-s",
+        action="store_true",
+        help="Show only the summary, no turn-by-turn steps"
+    )
+    route_parser.add_argument(
+        "--json", "-j",
+        action="store_true",
+        help="Output as JSON"
+    )
+
     # destination command
     dest_parser = subparsers.add_parser(
         "destination",
@@ -991,6 +1326,7 @@ def main() -> int:
         "geocode": cmd_geocode,
         "reverse": cmd_reverse,
         "distance": cmd_distance,
+        "route": cmd_route,
         "destination": cmd_destination,
         "validate": cmd_validate,
         "ip": cmd_ip,

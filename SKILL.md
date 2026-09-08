@@ -1,7 +1,7 @@
 ---
 name: geo
 description: CLI tool for working with latitude/longitude and geography - geocoding, distance calculations, and IP geolocation
-compatibility: Requires 'geo.py' script in PATH. No API keys needed. Uses Nominatim (OpenStreetMap) and ip-api.com.
+compatibility: Requires 'geo.py' script in PATH. No API keys needed. Uses Nominatim (OpenStreetMap), Valhalla (FOSSGIS), and ip-api.com.
 ---
 
 # geo.py
@@ -29,6 +29,25 @@ Calculate distance between two points (accepts addresses or coordinates):
 geo.py distance --from "New York" --to "Los Angeles"
 geo.py distance --from "40.7128,-74.0060" --to "34.0522,-118.2437" --unit km
 ```
+
+### route
+Get turn-by-turn driving/walking/cycling directions:
+```bash
+geo.py route --from "Seattle" --to "Portland, OR"
+geo.py route --from "Times Square" --to "Central Park" --mode walking --unit km
+geo.py route --from "Boston" --to "NYC" --via "Hartford, CT" --no-steps
+geo.py route --from "Seattle" --to "Bellevue, WA" --json
+```
+
+Modes: `driving` (default), `walking`, `cycling`, `motorcycle`, `truck`.
+
+Output includes total distance, duration, whether the route uses tolls/ferries/highways,
+a Google Maps directions link, and numbered turn-by-turn steps. Use `--no-steps` when you
+only need the summary.
+
+Each step includes `instruction`, `street`, `toward` (the street it puts you on when the
+instruction text doesn't name it), `exit`, `toll`, `distance`, `cumulative_distance`, and
+`duration_seconds`.
 
 ### destination
 Calculate endpoint from start + bearing + distance:
@@ -106,12 +125,19 @@ geo.py geocode "NYC" --json | jq '.latitude'
    geo.py geocode "Address" --json | jq -r '"\(.latitude),\(.longitude)"'
    ```
 
-4. **Get bearing as cardinal direction**:
+4. **Route summary without the step list** (much less output):
+   ```bash
+   geo.py route --from A --to B --no-steps --json | jq '{miles: .distance.miles, mins: (.duration_seconds/60)}'
+   ```
+
+5. **Share the directions URL** from `route` as a clickable markdown link, same as `maps_url`.
+
+6. **Get bearing as cardinal direction**:
    ```bash
    geo.py distance --from A --to B --json | jq '.bearing.cardinal'
    ```
 
-5. **Chain with other tools**:
+7. **Chain with other tools**:
    ```bash
    # Get weather for an IP's location
    coords=$(geo.py ip 8.8.8.8 --json | jq -r '"\(.latitude),\(.longitude)"')
