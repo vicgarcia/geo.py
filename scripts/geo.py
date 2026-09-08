@@ -422,16 +422,25 @@ class GeoClient:
             raise GeoError("No route found between these locations")
 
         legs = []
+        traveled = 0.0
         for leg in trip["legs"]:
             maneuvers = []
-            if steps:
-                for m in leg.get("maneuvers", []):
-                    maneuvers.append({
-                        "instruction": m.get("instruction", ""),
-                        "street": ", ".join(m.get("street_names", [])) or None,
-                        "distance": _distance_units(m.get("length", 0.0)),
-                        "duration_seconds": round(m.get("time", 0.0)),
-                    })
+            raw_maneuvers = leg.get("maneuvers", [])
+            for index, m in enumerate(raw_maneuvers):
+                traveled += m.get("length", 0.0)
+                if not steps:
+                    continue
+                following = raw_maneuvers[index + 1] if index + 1 < len(raw_maneuvers) else None
+                maneuvers.append({
+                    "instruction": m.get("instruction", ""),
+                    "street": ", ".join(m.get("street_names") or []) or None,
+                    "toward": _step_toward(m, following),
+                    "exit": _step_exit(m),
+                    "toll": bool(m.get("toll")),
+                    "distance": _distance_units(m.get("length", 0.0)),
+                    "cumulative_distance": _distance_units(traveled),
+                    "duration_seconds": round(m.get("time", 0.0)),
+                })
             legs.append({
                 "distance": _distance_units(leg["summary"]["length"]),
                 "duration_seconds": round(leg["summary"]["time"]),
@@ -521,6 +530,55 @@ def _distance_units(kilometers: float) -> dict:
         "feet": round(meters * 3.280839895, 3),
         "nautical_miles": round(kilometers * 0.539957, 3),
     }
+
+
+def _mentions_street(instruction: str, street: str) -> bool:
+    """
+    Check whether an instruction already names a street.
+
+    Compares against the name minus any trailing direction suffix, so
+    "onto SR 520" counts as already naming "SR 520 East".
+    """
+    if street in instruction:
+        return True
+
+    base = re.sub(r"\s+(North|South|East|West|N|S|E|W)$", "", street)
+    return bool(base) and base in instruction
+
+
+def _step_toward(maneuver: dict, following: Optional[dict]) -> Optional[str]:
+    """
+    Name the street a step puts you on, when the instruction text doesn't already.
+
+    Valhalla omits the street for unnamed segments (driveways, service roads), which
+    leaves bare instructions like "Drive northeast." Naming the road the next maneuver
+    happens on gives the step something to aim at.
+    """
+    instruction = maneuver.get("instruction", "")
+    streets = maneuver.get("street_names") or maneuver.get("begin_street_names") or []
+
+    for street in streets:
+        if not _mentions_street(instruction, street):
+            return street
+    if streets:
+        return None
+
+    # No street of its own - borrow the next maneuver's, as a "toward" hint
+    for street in (following or {}).get("street_names") or []:
+        if not _mentions_street(instruction, street):
+            return street
+    return None
+
+
+def _step_exit(maneuver: dict) -> Optional[str]:
+    """Extract the exit number from a maneuver's signage, if it has one."""
+    elements = (maneuver.get("sign") or {}).get("exit_number_elements") or []
+    instruction = maneuver.get("instruction", "")
+    numbers = [
+        e["text"] for e in elements
+        if e.get("text") and e["text"] not in instruction
+    ]
+    return ", ".join(numbers) or None
 
 
 def _format_duration(seconds: float) -> str:
@@ -774,9 +832,24 @@ def cmd_route(client: GeoClient, args: argparse.Namespace) -> int:
                     print("  " + "-" * 58)
                 for number, step in enumerate(leg["steps"], start=1):
                     print(f"  {number:>3}. {step['instruction']}")
+
+                    details = []
+                    if step["toward"]:
+                        details.append(f"toward {step['toward']}")
+                    if step["exit"]:
+                        details.append(f"exit {step['exit']}")
+                    if step["toll"]:
+                        details.append("toll")
                     if step["distance"]["meters"] >= 1:
-                        print(f"       {_format_distance(step['distance'], args.unit)}"
-                              f" ({_format_duration(step['duration_seconds'])})")
+                        details.append(
+                            f"{_format_distance(step['distance'], args.unit)}"
+                            f" ({_format_duration(step['duration_seconds'])})"
+                        )
+                        details.append(
+                            f"{_format_distance(step['cumulative_distance'], args.unit)} total"
+                        )
+                    if details:
+                        print(f"       {' · '.join(details)}")
             print()
 
         return 0

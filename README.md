@@ -116,12 +116,19 @@ Output:
   Map:        https://www.google.com/maps/dir/?api=1&origin=47.6205131,-122.3493036&destination=47.6144219,-122.192337&travelmode=driving
 
     1. Drive northeast.
-       0.075 mi (1m)
+       toward 5th Avenue North · 0.075 mi (1m) · 0.075 mi total
     2. Turn left onto 5th Avenue North.
-       0.250 mi (45s)
+       0.250 mi (45s) · 0.325 mi total
     3. Turn right onto Mercer Street.
-       0.617 mi (1m)
+       0.617 mi (1m) · 0.942 mi total
+    ...
+    6. Take exit 168B onto SR 520 toward Bellevue/Kirkland.
+       toll · 6.793 mi (7m) · 8.942 mi total
 ```
+
+Each step carries a detail line with whatever context applies: the street it puts you on
+(when the instruction itself doesn't name it), the exit number, a toll marker, the step's
+own distance and time, and the running total from the start.
 
 Use `--no-steps` for just the summary, and `--json` for machine-readable output.
 
