@@ -594,6 +594,38 @@ def _format_duration(seconds: float) -> str:
     return f"{secs}s"
 
 
+def _geojson_feature(geometry: dict, properties: Optional[dict] = None) -> dict:
+    """Wrap a geometry in a GeoJSON Feature."""
+    return {
+        "type": "Feature",
+        "geometry": geometry,
+        "properties": {k: v for k, v in (properties or {}).items() if v is not None},
+    }
+
+
+def _geojson_point(lat: float, lng: float, properties: Optional[dict] = None) -> dict:
+    """Build a GeoJSON Point feature. Note GeoJSON orders coordinates lng, lat."""
+    return _geojson_feature({"type": "Point", "coordinates": [lng, lat]}, properties)
+
+
+def _geojson_line(points: list, properties: Optional[dict] = None) -> dict:
+    """Build a GeoJSON LineString feature from [(lat, lng), ...]."""
+    return _geojson_feature(
+        {"type": "LineString", "coordinates": [[lng, lat] for lat, lng in points]},
+        properties,
+    )
+
+
+def _geojson_collection(features: list) -> dict:
+    """Wrap features in a GeoJSON FeatureCollection."""
+    return {"type": "FeatureCollection", "features": features}
+
+
+def _print_geojson(obj: dict) -> None:
+    """Print GeoJSON to stdout, ready to pipe into 'geo.py interact --geojson -'."""
+    print(json.dumps(obj, indent=2))
+
+
 def _maps_url(lat: float, lng: float) -> str:
     """Generate Google Maps URL for coordinates."""
     return f"https://www.google.com/maps?q={lat},{lng}"
@@ -639,8 +671,13 @@ def cmd_geocode(client: GeoClient, args: argparse.Namespace) -> int:
 
         maps_url = _maps_url(result['latitude'], result['longitude'])
 
-        if args.json:
-            import json
+        if args.geojson:
+            _print_geojson(_geojson_point(
+                result["latitude"], result["longitude"],
+                {"title": args.address, "description": result["address"],
+                 "marker-color": "#e6550d"},
+            ))
+        elif args.json:
             result["maps_url"] = maps_url
             print(json.dumps(result, indent=2))
         else:
@@ -678,8 +715,13 @@ def cmd_reverse(client: GeoClient, args: argparse.Namespace) -> int:
 
         maps_url = _maps_url(lat, lng)
 
-        if args.json:
-            import json
+        if args.geojson:
+            _print_geojson(_geojson_point(
+                lat, lng,
+                {"title": f"{lat}, {lng}", "description": result["address"],
+                 "marker-color": "#e6550d"},
+            ))
+        elif args.json:
             result["maps_url"] = maps_url
             print(json.dumps(result, indent=2))
         else:
@@ -730,8 +772,22 @@ def cmd_distance(client: GeoClient, args: argparse.Namespace) -> int:
         from_maps = _maps_url(from_lat, from_lng)
         to_maps = _maps_url(to_lat, to_lng)
 
-        if args.json:
-            import json
+        if args.geojson:
+            from_display = from_addr or f"{from_lat}, {from_lng}"
+            to_display = to_addr or f"{to_lat}, {to_lng}"
+            label = f"{_format_distance(result['distance'], args.unit)} ({cardinal})"
+            _print_geojson(_geojson_collection([
+                _geojson_point(from_lat, from_lng,
+                               {"title": "From", "description": from_display,
+                                "marker-color": "#31a354"}),
+                _geojson_point(to_lat, to_lng,
+                               {"title": "To", "description": to_display,
+                                "marker-color": "#e6550d"}),
+                _geojson_line([(from_lat, from_lng), (to_lat, to_lng)],
+                              {"title": label, "stroke": "#3182bd",
+                               "stroke-width": 3, "stroke-opacity": 0.8}),
+            ]))
+        elif args.json:
             result["bearing"] = {"degrees": bearing, "cardinal": cardinal}
             result["from"]["maps_url"] = from_maps
             result["to"]["maps_url"] = to_maps
@@ -892,8 +948,21 @@ def cmd_destination(client: GeoClient, args: argparse.Namespace) -> int:
         cardinal = _bearing_to_cardinal(args.bearing)
         dest_maps = _maps_url(dest_lat, dest_lng)
 
-        if args.json:
-            import json
+        if args.geojson:
+            _print_geojson(_geojson_collection([
+                _geojson_point(start_lat, start_lng,
+                               {"title": "Start",
+                                "description": start_addr or f"{start_lat}, {start_lng}",
+                                "marker-color": "#31a354"}),
+                _geojson_point(dest_lat, dest_lng,
+                               {"title": "Destination",
+                                "description": dest_addr or f"{dest_lat}, {dest_lng}",
+                                "marker-color": "#e6550d"}),
+                _geojson_line([(start_lat, start_lng), (dest_lat, dest_lng)],
+                              {"title": f"{args.distance} {args.unit} at {args.bearing}° ({cardinal})",
+                               "stroke": "#3182bd", "stroke-width": 3}),
+            ]))
+        elif args.json:
             result["distance_input"] = {"value": args.distance, "unit": args.unit}
             result["destination"]["maps_url"] = dest_maps
             if start_addr:
@@ -976,7 +1045,18 @@ def cmd_ip(client: GeoClient, args: argparse.Namespace) -> int:
         result = client.geolocate_ip(args.ip)
         maps_url = _maps_url(result['latitude'], result['longitude'])
 
-        if args.json:
+        if args.geojson:
+            where = ", ".join(
+                part for part in (result.get("city"), result.get("region"), result.get("country"))
+                if part
+            )
+            _print_geojson(_geojson_point(
+                result["latitude"], result["longitude"],
+                {"title": result.get("ip"), "description": where,
+                 "isp": result.get("isp"), "timezone": result.get("timezone"),
+                 "marker-color": "#756bb1"},
+            ))
+        elif args.json:
             import json
             result["maps_url"] = maps_url
             print(json.dumps(result, indent=2))
@@ -1032,16 +1112,22 @@ def cmd_bbox(client: GeoClient, args: argparse.Namespace) -> int:
         result = client.calculate_bbox(center_lat, center_lng, radius_km)
         maps_url = _maps_url(center_lat, center_lng)
 
-        if args.json:
-            import json
-            # Return just the GeoJSON if requested
-            if args.geojson:
-                print(json.dumps(result["geojson"], indent=2))
-            else:
-                result["maps_url"] = maps_url
-                if center_addr:
-                    result["center"]["address"] = center_addr
-                print(json.dumps(result, indent=2))
+        if args.geojson:
+            geojson = dict(result["geojson"])
+            geojson["properties"] = {
+                **(geojson.get("properties") or {}),
+                "title": center_addr or f"{center_lat}, {center_lng}",
+                "description": f"{args.radius} {args.unit} radius",
+                "stroke": "#3182bd",
+                "fill": "#3182bd",
+                "fill-opacity": 0.15,
+            }
+            _print_geojson(geojson)
+        elif args.json:
+            result["maps_url"] = maps_url
+            if center_addr:
+                result["center"]["address"] = center_addr
+            print(json.dumps(result, indent=2))
         else:
             center_display = center_addr or f"{center_lat}, {center_lng}"
             b = result["bounds"]
@@ -1063,12 +1149,6 @@ def cmd_bbox(client: GeoClient, args: argparse.Namespace) -> int:
             print()
             print(f"  bbox:       {bbox_str}")
             print()
-
-            if args.geojson:
-                import json
-                print("  GeoJSON:")
-                print(json.dumps(result["geojson"], indent=2))
-                print()
 
         return 0
     except GeoError as e:
@@ -1104,6 +1184,11 @@ def main() -> int:
         action="store_true",
         help="Output as JSON"
     )
+    geocode_parser.add_argument(
+        "--geojson", "-g",
+        action="store_true",
+        help="Output as GeoJSON (pipe into 'geo.py interact --geojson -')"
+    )
 
     # reverse command
     reverse_parser = subparsers.add_parser(
@@ -1119,6 +1204,11 @@ def main() -> int:
         "--json", "-j",
         action="store_true",
         help="Output as JSON"
+    )
+    reverse_parser.add_argument(
+        "--geojson", "-g",
+        action="store_true",
+        help="Output as GeoJSON (pipe into 'geo.py interact --geojson -')"
     )
 
     # distance command
@@ -1160,6 +1250,11 @@ def main() -> int:
         "--json", "-j",
         action="store_true",
         help="Output as JSON"
+    )
+    distance_parser.add_argument(
+        "--geojson", "-g",
+        action="store_true",
+        help="Output as GeoJSON (pipe into 'geo.py interact --geojson -')"
     )
 
     # route command
@@ -1242,6 +1337,11 @@ def main() -> int:
         action="store_true",
         help="Output as JSON"
     )
+    dest_parser.add_argument(
+        "--geojson", "-g",
+        action="store_true",
+        help="Output as GeoJSON (pipe into 'geo.py interact --geojson -')"
+    )
 
     # validate command
     validate_parser = subparsers.add_parser(
@@ -1275,6 +1375,11 @@ def main() -> int:
         "--json", "-j",
         action="store_true",
         help="Output as JSON"
+    )
+    ip_parser.add_argument(
+        "--geojson", "-g",
+        action="store_true",
+        help="Output as GeoJSON (pipe into 'geo.py interact --geojson -')"
     )
 
     # bbox command
