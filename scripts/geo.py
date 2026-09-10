@@ -49,6 +49,8 @@ Examples:
   geo.py interact --marker "Space Needle:Start here" --marker "Pike Place Market"
   geo.py route --from "Seattle" --to "Portland, OR" --geojson | geo.py interact --geojson -
   geo.py interact --center "Denver" --script viz.js
+  geo.py interact --center "Zermatt" --tiles topo --zoom 14
+  geo.py interact --center "Manhattan" --tiles satellite
 
   geo.py destination --start "40.7128,-74.0060" --bearing 270 --distance 100
   geo.py destination --start "Seattle" --bearing 180 --distance 50 --unit km
@@ -69,6 +71,16 @@ Smart Location Parsing:
     "New York City"        Address (auto-geocoded)
     "Tokyo, Japan"         Address with region
 
+Basemap Tiles (interact):
+  osm           OpenStreetMap standard (default)
+  topo          OpenTopoMap, contour lines
+  cyclosm       CyclOSM, cycling infrastructure
+  humanitarian  Humanitarian OSM Team style
+  light         CARTO Positron, muted light
+  dark          CARTO Dark Matter
+  satellite     Esri World Imagery
+  terrain       Esri World Topo
+
 Travel Modes (route):
   driving       Car (default)
   walking       Pedestrian
@@ -84,6 +96,51 @@ Distance Units:
   nm            Nautical miles
 """
 
+
+# Keyless raster tile providers. Each is free to use under its own fair-use
+# policy - keep traffic light and leave the attribution intact.
+TILE_LAYERS = {
+    "osm": {
+        "url": "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+        "attribution": '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+        "max_zoom": 19,
+    },
+    "topo": {
+        "url": "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png",
+        "attribution": '&copy; OpenStreetMap contributors | &copy; <a href="https://opentopomap.org">OpenTopoMap</a> (CC-BY-SA)',
+        "max_zoom": 17,
+    },
+    "cyclosm": {
+        "url": "https://{s}.tile-cyclosm.openstreetmap.fr/cyclosm/{z}/{x}/{y}.png",
+        "attribution": '&copy; OpenStreetMap contributors | tiles <a href="https://www.cyclosm.org/">CyclOSM</a>',
+        "max_zoom": 20,
+    },
+    "humanitarian": {
+        "url": "https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png",
+        "attribution": '&copy; OpenStreetMap contributors | tiles <a href="https://www.hotosm.org/">HOT</a>',
+        "max_zoom": 20,
+    },
+    "light": {
+        "url": "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png",
+        "attribution": '&copy; OpenStreetMap contributors | &copy; <a href="https://carto.com/attributions">CARTO</a>',
+        "max_zoom": 20,
+    },
+    "dark": {
+        "url": "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
+        "attribution": '&copy; OpenStreetMap contributors | &copy; <a href="https://carto.com/attributions">CARTO</a>',
+        "max_zoom": 20,
+    },
+    "satellite": {
+        "url": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        "attribution": 'Tiles &copy; <a href="https://www.esri.com/">Esri</a>, Maxar, Earthstar Geographics',
+        "max_zoom": 19,
+    },
+    "terrain": {
+        "url": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}",
+        "attribution": 'Tiles &copy; <a href="https://www.esri.com/">Esri</a>',
+        "max_zoom": 19,
+    },
+}
 
 MAP_PAGE = """\
 <!doctype html>
@@ -109,9 +166,9 @@ const ZOOM = __ZOOM__;
 const HAS_SCRIPT = __HAS_SCRIPT__;
 
 const map = L.map('map');
-L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-  maxZoom: 19,
-  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+L.tileLayer(__TILE_URL__, {
+  maxZoom: __TILE_MAX_ZOOM__,
+  attribution: __TILE_ATTRIBUTION__
 }).addTo(map);
 
 // Layers keyed for --script to reach: layers.data is the loaded GeoJSON
@@ -935,10 +992,17 @@ def cmd_interact(client: GeoClient, args: argparse.Namespace) -> int:
             except OSError as e:
                 raise GeoError(f"Could not read {args.script}: {e}")
 
+        tiles = TILE_LAYERS[args.tiles]
+        if args.zoom is not None and args.zoom > tiles["max_zoom"]:
+            print(f"  Note: {args.tiles} tiles stop at zoom {tiles['max_zoom']}")
+
         page = (MAP_PAGE
                 .replace("__CENTER__", json.dumps(center))
                 .replace("__ZOOM__", json.dumps(args.zoom))
-                .replace("__HAS_SCRIPT__", "true" if script else "false"))
+                .replace("__HAS_SCRIPT__", "true" if script else "false")
+                .replace("__TILE_URL__", json.dumps(tiles["url"]))
+                .replace("__TILE_ATTRIBUTION__", json.dumps(tiles["attribution"]))
+                .replace("__TILE_MAX_ZOOM__", str(tiles["max_zoom"])))
 
         return _serve_map(page, _geojson_collection(features), script,
                           args.port, not args.no_open)
@@ -1652,6 +1716,12 @@ def main() -> int:
     interact_parser.add_argument(
         "--script", "-s",
         help="JavaScript file run after load, with map, L, layers and geo in scope"
+    )
+    interact_parser.add_argument(
+        "--tiles", "-t",
+        default="osm",
+        choices=sorted(TILE_LAYERS),
+        help="Basemap tiles (default: osm)"
     )
     interact_parser.add_argument(
         "--port", "-p",
