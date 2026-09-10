@@ -1,7 +1,7 @@
 ---
 name: geo
 description: CLI tool for working with latitude/longitude and geography - geocoding, distance calculations, and IP geolocation
-compatibility: Requires 'geo.py' script in PATH. No API keys needed. Uses Nominatim (OpenStreetMap), Valhalla (FOSSGIS), and ip-api.com.
+compatibility: Requires 'geo.py' script in PATH. No API keys needed. Uses Nominatim (OpenStreetMap), Valhalla (FOSSGIS), OSM/Esri/CARTO tiles, and ip-api.com.
 ---
 
 # geo.py
@@ -48,6 +48,25 @@ only need the summary.
 Each step includes `instruction`, `street`, `toward` (the street it puts you on when the
 instruction text doesn't name it), `exit`, `toll`, `distance`, `cumulative_distance`, and
 `duration_seconds`.
+
+### interact
+Serve an interactive Leaflet map on localhost (blocks until Ctrl+C):
+```bash
+geo.py interact --center "Seattle" --zoom 12
+geo.py interact --marker "Space Needle:Start here" --marker "Pike Place Market"
+geo.py route --from "Seattle" --to "Portland, OR" --geojson | geo.py interact --geojson -
+geo.py interact --center "Zermatt" --tiles satellite --script viz.js
+```
+
+Tiles: `osm` (default), `topo`, `cyclosm`, `humanitarian`, `light`, `dark`,
+`satellite`, `terrain`. All keyless.
+
+**This command blocks.** Only run it when the user wants to look at a map, and tell
+them the URL. Use `--no-open` if a browser should not be launched.
+
+Styling follows the simplestyle-spec (`marker-color`, `stroke`, `fill`, ...), with
+`title`/`description` becoming the popup. `--script FILE.js` runs after load with
+`map`, `L`, `layers` and `geo` in scope for anything the flags don't cover.
 
 ### destination
 Calculate endpoint from start + bearing + distance:
@@ -103,6 +122,14 @@ In JSON output:
 ```
 [View on Google Maps](https://www.google.com/maps?q=40.7827725,-73.9653627)
 ```
+
+## GeoJSON Output
+
+Every location-producing command accepts `--geojson`, which pipes straight into the map:
+```bash
+geo.py route --from A --to B --geojson | geo.py interact --geojson -
+```
+`route --geojson` carries the real road geometry, not just endpoints.
 
 ## JSON Output
 
