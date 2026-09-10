@@ -444,6 +444,7 @@ class GeoClient:
             legs.append({
                 "distance": _distance_units(leg["summary"]["length"]),
                 "duration_seconds": round(leg["summary"]["time"]),
+                "shape": _decode_polyline(leg["shape"]) if leg.get("shape") else [],
                 "steps": maneuvers,
             })
 
@@ -592,6 +593,37 @@ def _format_duration(seconds: float) -> str:
     if minutes:
         return f"{minutes}m"
     return f"{secs}s"
+
+
+def _decode_polyline(encoded: str, precision: int = 6) -> list[tuple[float, float]]:
+    """
+    Decode an encoded polyline into [(lat, lng), ...].
+
+    Valhalla encodes route shapes at precision 6, unlike the Google/OSRM
+    default of 5.
+    """
+    factor = 10 ** precision
+    coordinates = []
+    index = lat = lng = 0
+
+    while index < len(encoded):
+        for is_latitude in (True, False):
+            shift = result = 0
+            while True:
+                byte = ord(encoded[index]) - 63
+                index += 1
+                result |= (byte & 0x1f) << shift
+                shift += 5
+                if byte < 0x20:
+                    break
+            delta = ~(result >> 1) if result & 1 else result >> 1
+            if is_latitude:
+                lat += delta
+            else:
+                lng += delta
+        coordinates.append((lat / factor, lng / factor))
+
+    return coordinates
 
 
 def _geojson_feature(geometry: dict, properties: Optional[dict] = None) -> dict:
@@ -851,7 +883,36 @@ def cmd_route(client: GeoClient, args: argparse.Namespace) -> int:
         result = client.route(waypoints, mode=args.mode, steps=not args.no_steps)
         directions_url = _directions_url(waypoints, args.mode)
 
-        if args.json:
+        if args.geojson:
+            features = []
+            for index, leg in enumerate(result["legs"], start=1):
+                if not leg["shape"]:
+                    continue
+                features.append(_geojson_line(leg["shape"], {
+                    "title": f"Leg {index}" if len(result["legs"]) > 1 else result["mode"],
+                    "description": (
+                        f"{_format_distance(leg['distance'], args.unit)}"
+                        f", {_format_duration(leg['duration_seconds'])}"
+                    ),
+                    "mode": result["mode"],
+                    "stroke": "#3182bd",
+                    "stroke-width": 5,
+                    "stroke-opacity": 0.8,
+                }))
+            for position, stop in enumerate(stops):
+                if position == 0:
+                    title, color = "Start", "#31a354"
+                elif position == len(stops) - 1:
+                    title, color = "Destination", "#e6550d"
+                else:
+                    title, color = f"Stop {position}", "#756bb1"
+                features.append(_geojson_point(
+                    stop["latitude"], stop["longitude"],
+                    {"title": title, "description": stop["address"] or stop["input"],
+                     "marker-color": color},
+                ))
+            _print_geojson(_geojson_collection(features))
+        elif args.json:
             result["stops"] = stops
             result["directions_url"] = directions_url
             print(json.dumps(result, indent=2))
@@ -1301,6 +1362,11 @@ def main() -> int:
         "--json", "-j",
         action="store_true",
         help="Output as JSON"
+    )
+    route_parser.add_argument(
+        "--geojson", "-g",
+        action="store_true",
+        help="Output as GeoJSON (pipe into 'geo.py interact --geojson -')"
     )
 
     # destination command
