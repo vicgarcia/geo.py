@@ -14,9 +14,12 @@ Designed for agents and humans who need to work with geographic data.
 """
 
 import argparse
+import http.server
 import json
 import re
+import socket
 import sys
+import webbrowser
 from typing import Optional
 
 import requests
@@ -41,6 +44,11 @@ Examples:
   geo.py route --from "Seattle" --to "Portland, OR"
   geo.py route --from "Times Square" --to "Central Park" --mode walking
   geo.py route --from "Boston" --to "NYC" --via "Hartford, CT" --json
+
+  geo.py interact --center "Seattle" --zoom 12
+  geo.py interact --marker "Space Needle:Start here" --marker "Pike Place Market"
+  geo.py route --from "Seattle" --to "Portland, OR" --geojson | geo.py interact --geojson -
+  geo.py interact --center "Denver" --script viz.js
 
   geo.py destination --start "40.7128,-74.0060" --bearing 270 --distance 100
   geo.py destination --start "Seattle" --bearing 180 --distance 50 --unit km
@@ -74,6 +82,127 @@ Distance Units:
   m, meters     Meters
   ft, feet      Feet
   nm            Nautical miles
+"""
+
+
+MAP_PAGE = """\
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>geo.py</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  html, body, #map { height: 100%; margin: 0; }
+  .leaflet-popup-content { font: 13px/1.45 system-ui, sans-serif; }
+  .leaflet-popup-content dt { font-weight: 600; margin-top: 4px; }
+  .leaflet-popup-content dd { margin: 0; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<script>
+const CENTER = __CENTER__;
+const ZOOM = __ZOOM__;
+const HAS_SCRIPT = __HAS_SCRIPT__;
+
+const map = L.map('map');
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom: 19,
+  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+}).addTo(map);
+
+// Layers keyed for --script to reach: layers.data is the loaded GeoJSON
+const layers = {};
+let geo = null;
+
+function esc(value) {
+  return String(value).replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[c]));
+}
+
+// simplestyle-spec: https://github.com/mapbox/simplestyle-spec
+function styleFor(feature) {
+  const p = feature.properties || {};
+  const geometry = feature.geometry || {};
+  // Leaflet applies style() to pointToLayer results too, so honour marker-color
+  // here or it gets overwritten with the line defaults below.
+  if (geometry.type && geometry.type.indexOf('Point') !== -1 && p['marker-color']) {
+    return { color: '#fff', weight: 2, fillColor: p['marker-color'], fillOpacity: 1 };
+  }
+  return {
+    color: p['stroke'] || '#3388ff',
+    weight: p['stroke-width'] || 4,
+    opacity: p['stroke-opacity'] !== undefined ? p['stroke-opacity'] : 0.9,
+    fillColor: p['fill'] || p['stroke'] || '#3388ff',
+    fillOpacity: p['fill-opacity'] !== undefined ? p['fill-opacity'] : 0.2
+  };
+}
+
+function markerFor(feature, latlng) {
+  const p = feature.properties || {};
+  const color = p['marker-color'];
+  const sizes = { small: 6, medium: 8, large: 11 };
+  if (!color) return L.marker(latlng);
+  return L.circleMarker(latlng, {
+    radius: sizes[p['marker-size']] || 8,
+    color: '#fff', weight: 2, fillColor: color, fillOpacity: 1
+  });
+}
+
+const STYLE_KEYS = /^(stroke|fill|marker-)/;
+
+function popupFor(feature, layer) {
+  const p = feature.properties || {};
+  const parts = [];
+  if (p.title) parts.push('<strong>' + esc(p.title) + '</strong>');
+  if (p.description) parts.push(esc(p.description));
+
+  const extra = Object.keys(p)
+    .filter(k => k !== 'title' && k !== 'description' && !STYLE_KEYS.test(k));
+  if (extra.length) {
+    parts.push('<dl>' + extra
+      .map(k => '<dt>' + esc(k) + '</dt><dd>' + esc(p[k]) + '</dd>').join('') + '</dl>');
+  }
+  if (parts.length) layer.bindPopup(parts.join('<br>'));
+}
+
+function frame() {
+  const bounds = layers.data && layers.data.getBounds();
+  if (CENTER) {
+    map.setView(CENTER, ZOOM === null ? 13 : ZOOM);
+  } else if (bounds && bounds.isValid()) {
+    map.fitBounds(bounds, { padding: [40, 40] });
+    if (ZOOM !== null) map.setZoom(ZOOM);
+  } else {
+    map.setView([0, 0], ZOOM === null ? 2 : ZOOM);
+  }
+}
+
+fetch('data.json')
+  .then(r => r.json())
+  .then(data => {
+    geo = data;
+    if (data.features && data.features.length) {
+      layers.data = L.geoJSON(data, {
+        style: styleFor, pointToLayer: markerFor, onEachFeature: popupFor
+      }).addTo(map);
+    }
+    frame();
+    // Load user script last so map, L, layers and geo are all ready
+    if (HAS_SCRIPT) {
+      const tag = document.createElement('script');
+      tag.src = 'script.js';
+      document.body.appendChild(tag);
+    }
+  })
+  .catch(err => console.error('geo.py: failed to load data.json', err));
+</script>
+</body>
+</html>
 """
 
 
@@ -691,6 +820,132 @@ def _directions_url(waypoints: list[tuple[float, float]], mode: str = "driving")
 # ============================================================================
 # Command handlers
 # ============================================================================
+
+def _load_geojson_inputs(sources: list) -> list:
+    """
+    Read GeoJSON from files or stdin ('-') and flatten into a list of features.
+
+    Accepts a FeatureCollection, a bare Feature, or a raw geometry.
+    """
+    features = []
+
+    for source in sources:
+        try:
+            raw = sys.stdin.read() if source == "-" else open(source).read()
+        except OSError as e:
+            raise GeoError(f"Could not read {source}: {e}")
+
+        try:
+            data = json.loads(raw)
+        except ValueError as e:
+            label = "stdin" if source == "-" else source
+            raise GeoError(f"{label} is not valid JSON: {e}")
+
+        kind = data.get("type") if isinstance(data, dict) else None
+        if kind == "FeatureCollection":
+            features.extend(data.get("features") or [])
+        elif kind == "Feature":
+            features.append(data)
+        elif kind:
+            features.append(_geojson_feature(data))
+        else:
+            label = "stdin" if source == "-" else source
+            raise GeoError(f"{label} is not GeoJSON (no 'type' member)")
+
+    return features
+
+
+def _serve_map(page: str, data: dict, script: Optional[str], port: int, open_browser: bool) -> int:
+    """Serve the Leaflet page on localhost until interrupted."""
+    routes = {
+        "/": ("text/html; charset=utf-8", page.encode()),
+        "/data.json": ("application/json", json.dumps(data).encode()),
+        "/script.js": ("application/javascript", (script or "").encode()),
+    }
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            path = self.path.split("?")[0]
+            if path not in routes:
+                self.send_error(404)
+                return
+            content_type, body = routes[path]
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass  # keep the terminal readable
+
+    try:
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    except OSError as e:
+        if port == 0:
+            raise GeoError(f"Could not start server: {e}")
+        print(f"  Port {port} unavailable ({e.strerror}), using a free port instead")
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+
+    url = f"http://127.0.0.1:{server.server_address[1]}/"
+    feature_count = len(data.get("features") or [])
+    print(f"\n  Serving map at {url}")
+    print(f"  {feature_count} feature{'s' if feature_count != 1 else ''} loaded"
+          + ("  |  script: yes" if script else ""))
+    print("  Press Ctrl+C to stop\n", flush=True)
+
+    if open_browser:
+        webbrowser.open(url)
+
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("  Stopped")
+    finally:
+        server.server_close()
+
+    return 0
+
+
+def cmd_interact(client: GeoClient, args: argparse.Namespace) -> int:
+    """Handle the interact command."""
+    try:
+        features = _load_geojson_inputs(args.geojson or [])
+
+        # --marker "LOCATION:Popup text", location resolved the usual way
+        for marker in args.marker or []:
+            location, _, popup = marker.partition(":")
+            lat, lng, address = client.parse_location(location.strip())
+            features.append(_geojson_point(lat, lng, {
+                "title": popup.strip() or location.strip(),
+                "description": address,
+                "marker-color": "#e6550d",
+            }))
+
+        center = None
+        if args.center:
+            lat, lng, _ = client.parse_location(args.center)
+            center = [lat, lng]
+
+        script = None
+        if args.script:
+            try:
+                script = open(args.script).read()
+            except OSError as e:
+                raise GeoError(f"Could not read {args.script}: {e}")
+
+        page = (MAP_PAGE
+                .replace("__CENTER__", json.dumps(center))
+                .replace("__ZOOM__", json.dumps(args.zoom))
+                .replace("__HAS_SCRIPT__", "true" if script else "false"))
+
+        return _serve_map(page, _geojson_collection(features), script,
+                          args.port, not args.no_open)
+    except GeoError as e:
+        print(f"Error: {e}")
+        return 1
+
 
 def cmd_geocode(client: GeoClient, args: argparse.Namespace) -> int:
     """Handle the geocode command."""
@@ -1369,6 +1624,47 @@ def main() -> int:
         help="Output as GeoJSON (pipe into 'geo.py interact --geojson -')"
     )
 
+    # interact command
+    interact_parser = subparsers.add_parser(
+        "interact",
+        help="Serve an interactive Leaflet map on localhost",
+        description="Serve a full-page Leaflet map on localhost, optionally loaded with GeoJSON."
+    )
+    interact_parser.add_argument(
+        "--center", "-c",
+        help="Map center (coordinates or address); defaults to fitting the data"
+    )
+    interact_parser.add_argument(
+        "--zoom", "-z",
+        type=int,
+        help="Zoom level (0-19)"
+    )
+    interact_parser.add_argument(
+        "--geojson", "-g",
+        action="append",
+        help="GeoJSON file to render, or '-' for stdin (repeatable)"
+    )
+    interact_parser.add_argument(
+        "--marker", "-m",
+        action="append",
+        help="Marker as 'LOCATION:Popup text' (repeatable)"
+    )
+    interact_parser.add_argument(
+        "--script", "-s",
+        help="JavaScript file run after load, with map, L, layers and geo in scope"
+    )
+    interact_parser.add_argument(
+        "--port", "-p",
+        type=int,
+        default=8765,
+        help="Port to serve on (default: 8765)"
+    )
+    interact_parser.add_argument(
+        "--no-open",
+        action="store_true",
+        help="Do not open a browser automatically"
+    )
+
     # destination command
     dest_parser = subparsers.add_parser(
         "destination",
@@ -1498,6 +1794,7 @@ def main() -> int:
         "reverse": cmd_reverse,
         "distance": cmd_distance,
         "route": cmd_route,
+        "interact": cmd_interact,
         "destination": cmd_destination,
         "validate": cmd_validate,
         "ip": cmd_ip,
