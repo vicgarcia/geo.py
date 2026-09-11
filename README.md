@@ -166,8 +166,8 @@ Features are styled from their properties using the
 | `topo` | OpenTopoMap, contour lines (max zoom 17) |
 | `cyclosm` | CyclOSM, cycling infrastructure |
 | `humanitarian` | Humanitarian OSM Team style |
-| `light` | CARTO Positron, muted light |
-| `dark` | CARTO Dark Matter |
+| `light` | Esri Light Gray Canvas (max zoom 16) |
+| `dark` | Esri Dark Gray Canvas (max zoom 16) |
 | `satellite` | Esri World Imagery |
 | `terrain` | Esri World Topo |
 
@@ -353,7 +353,7 @@ geo.py geocode "NYC" --json | jq '.latitude, .longitude'
 |---------|---------|-------------|
 | Geocoding | [Nominatim](https://nominatim.org/) (OpenStreetMap) | 1 req/sec |
 | Routing | [Valhalla](https://valhalla1.openstreetmap.de/) (FOSSGIS public instance) | fair use; 1500 km max route |
-| Map tiles | OpenStreetMap, OpenTopoMap, CyclOSM, HOT, CARTO, Esri | fair use; keep attribution |
+| Map tiles | OpenStreetMap, OpenTopoMap, CyclOSM, HOT, Esri | fair use; keep attribution |
 | IP Geolocation | [ip-api.com](http://ip-api.com/) | 45 req/min |
 
 No API keys required. Please respect rate limits.

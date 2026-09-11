@@ -1,7 +1,7 @@
 ---
 name: geo
 description: CLI tool for working with latitude/longitude and geography - geocoding, distance calculations, and IP geolocation
-compatibility: Requires 'geo.py' script in PATH. No API keys needed. Uses Nominatim (OpenStreetMap), Valhalla (FOSSGIS), OSM/Esri/CARTO tiles, and ip-api.com.
+compatibility: Requires 'geo.py' script in PATH. No API keys needed. Uses Nominatim (OpenStreetMap), Valhalla (FOSSGIS), OSM/Esri tiles, and ip-api.com.
 ---
 
 # geo.py

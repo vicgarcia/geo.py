@@ -76,8 +76,8 @@ Basemap Tiles (interact):
   topo          OpenTopoMap, contour lines
   cyclosm       CyclOSM, cycling infrastructure
   humanitarian  Humanitarian OSM Team style
-  light         CARTO Positron, muted light
-  dark          CARTO Dark Matter
+  light         Esri Light Gray Canvas
+  dark          Esri Dark Gray Canvas
   satellite     Esri World Imagery
   terrain       Esri World Topo
 
@@ -121,14 +121,14 @@ TILE_LAYERS = {
         "max_zoom": 20,
     },
     "light": {
-        "url": "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png",
-        "attribution": '&copy; OpenStreetMap contributors | &copy; <a href="https://carto.com/attributions">CARTO</a>',
-        "max_zoom": 20,
+        "url": "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}",
+        "attribution": 'Tiles &copy; <a href="https://www.esri.com/">Esri</a> | &copy; OpenStreetMap contributors',
+        "max_zoom": 16,
     },
     "dark": {
-        "url": "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
-        "attribution": '&copy; OpenStreetMap contributors | &copy; <a href="https://carto.com/attributions">CARTO</a>',
-        "max_zoom": 20,
+        "url": "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}",
+        "attribution": 'Tiles &copy; <a href="https://www.esri.com/">Esri</a> | &copy; OpenStreetMap contributors',
+        "max_zoom": 16,
     },
     "satellite": {
         "url": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
