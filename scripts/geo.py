@@ -1540,6 +1540,53 @@ def cmd_bbox(client: GeoClient, args: argparse.Namespace) -> int:
 # Main CLI
 # ============================================================================
 
+COORDINATE_TOKEN = re.compile(
+    r"^[-+]?\d{1,3}(?:\.\d+)?\s*[,\s]\s*[-+]?\d{1,3}(?:\.\d+)?$"
+)
+
+
+def _value_option_strings(parser: argparse.ArgumentParser) -> set:
+    """Collect every option string that takes a value, subcommands included."""
+    names = set()
+
+    for action in parser._actions:
+        if action.option_strings and action.nargs != 0:
+            names.update(action.option_strings)
+        if isinstance(action, argparse._SubParsersAction):
+            for subparser in action.choices.values():
+                names |= _value_option_strings(subparser)
+
+    return names
+
+
+def _normalize_coordinate_args(argv: list, value_options: set) -> list:
+    """
+    Let southern hemisphere coordinates survive argparse.
+
+    argparse reads any token starting with '-' as an option, so '-33.87,151.21'
+    is rejected wherever a location is expected. Attach such a value to the flag
+    it belongs to with '=', and push a bare positional behind a '--' guard.
+    """
+    normalized = []
+    positionals = []
+
+    for token in argv:
+        if token.startswith("-") and COORDINATE_TOKEN.match(token):
+            previous = normalized[-1] if normalized else ""
+            if previous in value_options:
+                normalized[-1] = f"{previous}={token}"
+            else:
+                positionals.append(token)
+            continue
+        normalized.append(token)
+
+    if positionals:
+        normalized.append("--")
+        normalized.extend(positionals)
+
+    return normalized
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="geo.py - CLI tool for working with lat/lng and geography",
@@ -1848,8 +1895,10 @@ def main() -> int:
         help="Output as JSON"
     )
 
-    # Parse args
-    args = parser.parse_args()
+    # Parse args, rescuing coordinates that begin with a negative latitude
+    args = parser.parse_args(
+        _normalize_coordinate_args(sys.argv[1:], _value_option_strings(parser))
+    )
 
     if not args.command:
         parser.print_help()
