@@ -34,6 +34,8 @@ CLI_EPILOG = """\
 Examples:
   geo.py geocode "1600 Pennsylvania Ave, Washington DC"
   geo.py geocode "Tokyo, Japan" --json
+  geo.py geocode "Colorado" --geojson --polygon
+  geo.py geocode "Switzerland" --geojson --polygon --simplify 0.01
 
   geo.py reverse 40.7128,-74.0060
   geo.py reverse "51.5074, -0.1278"
@@ -368,14 +370,21 @@ class GeoClient:
 
         return result["latitude"], result["longitude"], result["address"]
 
-    def geocode(self, address: str) -> Optional[dict]:
+    def geocode(self, address: str, polygon: bool = False) -> Optional[dict]:
         """
         Geocode an address to coordinates.
+
+        With polygon=True, also ask Nominatim for the administrative boundary
+        geometry, returned under "boundary" when the place has one.
 
         Returns dict with lat, lng, address, and raw response.
         """
         try:
-            location = self.geolocator.geocode(address, addressdetails=True)
+            kwargs = {"addressdetails": True}
+            if polygon:
+                kwargs["geometry"] = "geojson"
+
+            location = self.geolocator.geocode(address, **kwargs)
             if not location:
                 return None
 
@@ -383,6 +392,7 @@ class GeoClient:
                 "latitude": location.latitude,
                 "longitude": location.longitude,
                 "address": location.address,
+                "boundary": location.raw.get("geojson") if polygon else None,
                 "raw": location.raw,
             }
         except Exception as e:
@@ -812,6 +822,58 @@ def _decode_polyline(encoded: str, precision: int = 6) -> list[tuple[float, floa
     return coordinates
 
 
+def _simplify_ring(points: list, tolerance: float) -> list:
+    """Douglas-Peucker simplification of a coordinate ring."""
+    if len(points) < 3:
+        return points
+
+    keep = [False] * len(points)
+    keep[0] = keep[-1] = True
+    stack = [(0, len(points) - 1)]
+
+    while stack:
+        start, end = stack.pop()
+        ax, ay = points[start]
+        bx, by = points[end]
+        dx, dy = bx - ax, by - ay
+        span = dx * dx + dy * dy
+
+        worst, index = tolerance, None
+        for i in range(start + 1, end):
+            px, py = points[i]
+            if span == 0:
+                dist = ((px - ax) ** 2 + (py - ay) ** 2) ** 0.5
+            else:
+                t = max(0, min(1, ((px - ax) * dx + (py - ay) * dy) / span))
+                dist = ((px - ax - t * dx) ** 2 + (py - ay - t * dy) ** 2) ** 0.5
+            if dist > worst:
+                worst, index = dist, i
+
+        if index is not None:
+            keep[index] = True
+            stack.append((start, index))
+            stack.append((index, end))
+
+    return [pt for pt, k in zip(points, keep) if k]
+
+
+def _simplify_geometry(geometry: dict, tolerance: float) -> dict:
+    """Simplify Polygon/MultiPolygon coordinates, leaving other types alone."""
+    if not geometry or tolerance <= 0:
+        return geometry
+
+    kind = geometry.get("type")
+    if kind == "Polygon":
+        rings = [_simplify_ring(r, tolerance) for r in geometry["coordinates"]]
+    elif kind == "MultiPolygon":
+        rings = [[_simplify_ring(r, tolerance) for r in poly]
+                 for poly in geometry["coordinates"]]
+    else:
+        return geometry
+
+    return {"type": kind, "coordinates": rings}
+
+
 def _geojson_feature(geometry: dict, properties: Optional[dict] = None) -> dict:
     """Wrap a geometry in a GeoJSON Feature."""
     return {
@@ -1014,7 +1076,7 @@ def cmd_interact(client: GeoClient, args: argparse.Namespace) -> int:
 def cmd_geocode(client: GeoClient, args: argparse.Namespace) -> int:
     """Handle the geocode command."""
     try:
-        result = client.geocode(args.address)
+        result = client.geocode(args.address, polygon=args.polygon)
 
         if not result:
             print(f"No results found for: {args.address}")
@@ -1023,11 +1085,19 @@ def cmd_geocode(client: GeoClient, args: argparse.Namespace) -> int:
         maps_url = _maps_url(result['latitude'], result['longitude'])
 
         if args.geojson:
-            _print_geojson(_geojson_point(
-                result["latitude"], result["longitude"],
-                {"title": args.address, "description": result["address"],
-                 "marker-color": "#e6550d"},
-            ))
+            properties = {"title": args.address, "description": result["address"],
+                          "marker-color": "#e6550d"}
+            boundary = result.get("boundary")
+            if boundary:
+                properties["latitude"] = result["latitude"]
+                properties["longitude"] = result["longitude"]
+                _print_geojson(_geojson_feature(
+                    _simplify_geometry(boundary, args.simplify), properties))
+            else:
+                if args.polygon:
+                    print(f"No boundary geometry for: {args.address}", file=sys.stderr)
+                _print_geojson(_geojson_point(
+                    result["latitude"], result["longitude"], properties))
         elif args.json:
             result["maps_url"] = maps_url
             print(json.dumps(result, indent=2))
@@ -1605,6 +1675,18 @@ def main() -> int:
     geocode_parser.add_argument(
         "address",
         help="Address to geocode (e.g., '1600 Pennsylvania Ave, Washington DC')"
+    )
+    geocode_parser.add_argument(
+        "--polygon", "-p",
+        action="store_true",
+        help="Include the administrative boundary polygon, when the place has one"
+    )
+    geocode_parser.add_argument(
+        "--simplify",
+        type=float,
+        default=0.0,
+        metavar="DEGREES",
+        help="Simplify boundary geometry by this tolerance (e.g. 0.01)"
     )
     geocode_parser.add_argument(
         "--json", "-j",
