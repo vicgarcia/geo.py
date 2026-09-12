@@ -119,27 +119,61 @@ geo.py bbox --center "NYC" --radius 5 --unit km
 geo.py bbox --center "40.7128,-74.006" --radius 1 --unit miles --json --geojson
 ```
 
-## Verify the Match Before Trusting It
+## Wrong-Match Protection
 
 Nominatim does free-form search and **will silently return a confidently wrong place**.
-Observed failures: `"Washington, USA"` resolves to Washington **D.C.**, not the state;
-`"134 Angell St, Providence, RI"` resolves to a street of the same name in Woonsocket,
-15 miles away. Nothing errors - you just get the wrong coordinates.
+`"Washington, USA"` resolves to Washington **D.C.**, not the state. `"134 Angell St,
+Providence, RI"` resolves to a same-named street in Woonsocket, 15 miles away. Nothing
+errors - you just get the wrong coordinates. Three tools address this.
 
-Every command echoes the resolved address. **Read it back and check it matches intent**,
-and surface it to the user rather than only the coordinates.
+**1. Ambiguity warnings are automatic.** When the runner-up scores within 15% of the
+winner, a warning goes to **stderr** (stdout stays clean, so pipes are unaffected):
 
-For programmatic checks, `--json` exposes Nominatim's own classification under `raw`:
-
-```bash
-# Is this actually a state/province, or did it match a city?
-geo.py geocode "Washington State, USA" --json | jq -r '.raw.type'    # administrative
-geo.py geocode "Washington, USA"       --json | jq -r '.raw.type'    # city  <- wrong
+```
+Warning: 'Springfield' is ambiguous - two close matches
+  using:   Springfield, Sangamon County, Illinois, United States
+  also:    Springfield, Hampden County, Massachusetts, United States (administrative)
 ```
 
-Useful `raw` fields: `type` and `class` (what kind of place matched), `addresstype`,
-`place_rank`, `importance`. When a query is ambiguous, disambiguate it - add the state,
-country, or the word "State"/"County" - and re-check rather than hoping.
+This fires for any address input, including `distance`, `route` and `interact`.
+
+**2. `--limit N` lists the candidates.** The right answer is often the runner-up:
+
+```bash
+geo.py geocode "Washington, USA" --limit 5
+#   1. Washington, District of Columbia   (city, 0.815)
+#   2. Washington, United States          (administrative, 0.764)  <- the state
+```
+
+`--json` carries the same list under `alternatives`, each with `address`, `type`,
+`class`, `importance` and coordinates.
+
+**3. `--near` constrains the search area.** The reliable fix for street addresses:
+
+```bash
+geo.py geocode "134 Angell St, Providence, RI"            # -> Woonsocket. Wrong.
+geo.py geocode "134 Angell St" --near "Providence, RI"    # -> Providence. Correct.
+geo.py geocode "Main St" --near "47.60,-122.33" --within 5 --unit km
+```
+
+`--within` defaults to 25 miles; `--near` takes an address or coordinates. The search is
+*bounded*, so a query with no match in the area fails rather than wandering.
+
+**4. `--expect-type` fails loudly instead of silently.** Best guardrail for scripts:
+
+```bash
+geo.py geocode "Washington, USA" --expect-type administrative
+# Error: expected administrative but matched city/place    (exit 1)
+geo.py geocode "Washington State, USA" --expect-type administrative   # exit 0
+```
+
+Takes a comma-separated list, checked against Nominatim's `type`, `class` and
+`addresstype`. Common values: `administrative` (state/country/county/city boundary),
+`city`, `town`, `village`, `building`, `house`, `peak`.
+
+**Do not** try to judge a match by `importance` alone - it is ~0 for *all* street
+addresses whether right or wrong (a correct address scored 0.00007, a wrong one 0.00006).
+Use the tools above, and echo the resolved address back to the user.
 
 ## Rate Limits and Batching
 

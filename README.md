@@ -60,6 +60,19 @@ Output:
   Map:        maps://?ll=38.8976387,-77.0365528&z=18
 ```
 
+**Avoiding wrong matches.** Free-form geocoding can return a confidently wrong place -
+`"Washington, USA"` is Washington D.C., not the state. `geocode` warns on stderr when a
+query is ambiguous, and offers three ways to pin it down:
+
+```bash
+geo.py geocode "Washington, USA" --limit 5              # list candidates
+geo.py geocode "134 Angell St" --near "Providence, RI"  # constrain the search area
+geo.py geocode "Washington State, USA" --expect-type administrative   # exit 1 on mismatch
+```
+
+`--near` takes an address or coordinates with `--within` (default 25 miles).
+`--expect-type` accepts a comma-separated list checked against OSM's classification.
+
 ### reverse
 
 Convert coordinates to an address.
