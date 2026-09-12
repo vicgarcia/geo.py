@@ -43,6 +43,7 @@ Examples:
   geo.py geocode "1600 Pennsylvania Ave, Washington DC"
   geo.py geocode "Tokyo, Japan" --json
   geo.py geocode "Washington, USA" --limit 5
+  geo.py geocode "134 Angell St" --near "Providence, RI" --within 10
   geo.py geocode "Colorado" --geojson --polygon
   geo.py geocode "Switzerland" --geojson --polygon --simplify 0.01
 
@@ -867,6 +868,34 @@ def _decode_polyline(encoded: str, precision: int = 6) -> list[tuple[float, floa
     return coordinates
 
 
+def _viewbox_around(client: "GeoClient", near: str, within: float, unit: str) -> list:
+    """
+    Build a Nominatim viewbox around a reference location.
+
+    Free-form search will happily match a same-named street in the wrong town;
+    constraining the search area is the reliable fix.
+    """
+    lat, lng, _ = client.parse_location(near)
+    radius_km = _to_kilometers(within, unit)
+    bounds = client.calculate_bbox(lat, lng, radius_km)["bounds"]
+
+    return [(bounds["south"], bounds["west"]), (bounds["north"], bounds["east"])]
+
+
+def _to_kilometers(value: float, unit: str) -> float:
+    """Convert a distance in the given unit to kilometres."""
+    unit = unit.lower()
+    if unit in ("km", "kilometers"):
+        return value
+    if unit in ("m", "meters"):
+        return value / 1000
+    if unit in ("ft", "feet"):
+        return value * 0.0003048
+    if unit in ("nm", "nautical"):
+        return value * 1.852
+    return value * 1.60934  # miles
+
+
 def _ambiguous_alternative(result: dict) -> Optional[dict]:
     """
     Return the runner-up when it is close enough to be a real toss-up.
@@ -1153,10 +1182,18 @@ def cmd_interact(client: GeoClient, args: argparse.Namespace) -> int:
 def cmd_geocode(client: GeoClient, args: argparse.Namespace) -> int:
     """Handle the geocode command."""
     try:
-        result = client.geocode(args.address, polygon=args.polygon)
+        viewbox = None
+        if args.near:
+            viewbox = _viewbox_around(client, args.near, args.within, args.unit)
+
+        result = client.geocode(args.address, polygon=args.polygon, viewbox=viewbox)
 
         if not result:
-            print(f"No results found for: {args.address}")
+            if args.near:
+                print(f"No results for '{args.address}' within "
+                      f"{args.within} {args.unit} of {args.near}")
+            else:
+                print(f"No results found for: {args.address}")
             return 1
 
         _warn_if_ambiguous(result, args.address)
@@ -1764,6 +1801,22 @@ def main() -> int:
     geocode_parser.add_argument(
         "address",
         help="Address to geocode (e.g., '1600 Pennsylvania Ave, Washington DC')"
+    )
+    geocode_parser.add_argument(
+        "--near", "-n",
+        help="Restrict the search to the area around this location"
+    )
+    geocode_parser.add_argument(
+        "--within", "-w",
+        type=float,
+        default=25.0,
+        help="Radius used by --near (default: 25)"
+    )
+    geocode_parser.add_argument(
+        "--unit", "-u",
+        default="miles",
+        choices=["mi", "miles", "km", "kilometers", "m", "meters", "ft", "feet"],
+        help="Unit for --within (default: miles)"
     )
     geocode_parser.add_argument(
         "--limit", "-l",
