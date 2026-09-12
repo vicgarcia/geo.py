@@ -30,10 +30,19 @@ from geopy.point import Point
 # User agent for Nominatim (required)
 USER_AGENT = "geo.py-cli/1.0"
 
+# How many candidates to pull back so ambiguity is detectable. Same single
+# request either way, so this costs nothing against the rate limit.
+CANDIDATE_LIMIT = 5
+
+# Nominatim scores every match with an "importance". When the runner-up scores
+# this close to the winner the query is a genuine toss-up, not a clear hit.
+AMBIGUITY_RATIO = 0.85
+
 CLI_EPILOG = """\
 Examples:
   geo.py geocode "1600 Pennsylvania Ave, Washington DC"
   geo.py geocode "Tokyo, Japan" --json
+  geo.py geocode "Washington, USA" --limit 5
   geo.py geocode "Colorado" --geojson --polygon
   geo.py geocode "Switzerland" --geojson --polygon --simplify 0.01
 
@@ -368,31 +377,67 @@ class GeoClient:
         if not result:
             raise GeoError(f"Could not geocode address: {location}")
 
+        _warn_if_ambiguous(result, location)
+
         return result["latitude"], result["longitude"], result["address"]
 
-    def geocode(self, address: str, polygon: bool = False) -> Optional[dict]:
+    def geocode(
+        self,
+        address: str,
+        polygon: bool = False,
+        limit: int = CANDIDATE_LIMIT,
+        viewbox: Optional[list] = None,
+    ) -> Optional[dict]:
         """
         Geocode an address to coordinates.
 
         With polygon=True, also ask Nominatim for the administrative boundary
         geometry, returned under "boundary" when the place has one.
 
-        Returns dict with lat, lng, address, and raw response.
+        Runners-up come back under "alternatives" so callers can see whether the
+        query was ambiguous. viewbox restricts the search to [(lat, lng), (lat, lng)].
+
+        Returns dict with lat, lng, address, alternatives, and raw response.
         """
         try:
             kwargs = {"addressdetails": True}
             if polygon:
                 kwargs["geometry"] = "geojson"
+            if viewbox:
+                kwargs["viewbox"] = viewbox
+                kwargs["bounded"] = True
+            if limit > 1:
+                kwargs["exactly_one"] = False
+                kwargs["limit"] = limit
 
-            location = self.geolocator.geocode(address, **kwargs)
-            if not location:
+            found = self.geolocator.geocode(address, **kwargs)
+            if not found:
                 return None
+
+            if limit > 1:
+                found = list(found)
+                if not found:
+                    return None
+                location, runners_up = found[0], found[1:]
+            else:
+                location, runners_up = found, []
 
             return {
                 "latitude": location.latitude,
                 "longitude": location.longitude,
                 "address": location.address,
                 "boundary": location.raw.get("geojson") if polygon else None,
+                "alternatives": [
+                    {
+                        "latitude": alt.latitude,
+                        "longitude": alt.longitude,
+                        "address": alt.address,
+                        "type": alt.raw.get("type"),
+                        "class": alt.raw.get("class"),
+                        "importance": float(alt.raw.get("importance") or 0),
+                    }
+                    for alt in runners_up
+                ],
                 "raw": location.raw,
             }
         except Exception as e:
@@ -822,6 +867,38 @@ def _decode_polyline(encoded: str, precision: int = 6) -> list[tuple[float, floa
     return coordinates
 
 
+def _ambiguous_alternative(result: dict) -> Optional[dict]:
+    """
+    Return the runner-up when it is close enough to be a real toss-up.
+
+    Nominatim happily returns the same place twice, so identical addresses are
+    skipped rather than reported as competing answers.
+    """
+    top = float((result.get("raw") or {}).get("importance") or 0)
+    if not top:
+        return None
+
+    for alt in result.get("alternatives") or []:
+        if alt["address"] == result["address"]:
+            continue
+        return alt if alt["importance"] / top >= AMBIGUITY_RATIO else None
+
+    return None
+
+
+def _warn_if_ambiguous(result: dict, query: str) -> None:
+    """Warn on stderr when a query had a near-equal runner-up. Keeps stdout pipeable."""
+    alt = _ambiguous_alternative(result)
+    if not alt:
+        return
+
+    print(f"Warning: '{query}' is ambiguous - two close matches", file=sys.stderr)
+    print(f"  using:   {result['address']}", file=sys.stderr)
+    print(f"  also:    {alt['address']} ({alt['type']})", file=sys.stderr)
+    print("  narrow the query, or use --near, or --limit to list candidates",
+          file=sys.stderr)
+
+
 def _simplify_ring(points: list, tolerance: float) -> list:
     """Douglas-Peucker simplification of a coordinate ring."""
     if len(points) < 3:
@@ -1082,6 +1159,8 @@ def cmd_geocode(client: GeoClient, args: argparse.Namespace) -> int:
             print(f"No results found for: {args.address}")
             return 1
 
+        _warn_if_ambiguous(result, args.address)
+
         maps_url = _maps_url(result['latitude'], result['longitude'])
 
         if args.geojson:
@@ -1100,6 +1179,7 @@ def cmd_geocode(client: GeoClient, args: argparse.Namespace) -> int:
                     result["latitude"], result["longitude"], properties))
         elif args.json:
             result["maps_url"] = maps_url
+            result["alternatives"] = result["alternatives"][:max(0, args.limit - 1)]
             print(json.dumps(result, indent=2))
         else:
             print(f"\n  Geocode: {args.address}")
@@ -1108,6 +1188,15 @@ def cmd_geocode(client: GeoClient, args: argparse.Namespace) -> int:
             print(f"  Longitude:  {result['longitude']}")
             print(f"  Address:    {result['address']}")
             print(f"  Map:        {maps_url}")
+
+            others = result["alternatives"][:max(0, args.limit - 1)]
+            if others:
+                print()
+                print(f"  Other matches for '{args.address}':")
+                for number, alt in enumerate(others, start=2):
+                    print(f"    {number}. {alt['address']}")
+                    print(f"       {alt['type'] or '?'}, importance {alt['importance']:.3f}"
+                          f"  ({alt['latitude']}, {alt['longitude']})")
             print()
 
         return 0
@@ -1675,6 +1764,12 @@ def main() -> int:
     geocode_parser.add_argument(
         "address",
         help="Address to geocode (e.g., '1600 Pennsylvania Ave, Washington DC')"
+    )
+    geocode_parser.add_argument(
+        "--limit", "-l",
+        type=int,
+        default=1,
+        help="Show this many candidate matches (default: 1)"
     )
     geocode_parser.add_argument(
         "--polygon", "-p",
