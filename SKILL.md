@@ -1,6 +1,6 @@
 ---
 name: geo
-description: CLI tool for working with latitude/longitude and geography - geocoding, distance calculations, and IP geolocation
+description: CLI tool for geography and maps - geocoding, reverse geocoding, distance and bearing, turn-by-turn directions, boundary polygons, IP geolocation, GeoJSON output, and an interactive Leaflet map served on localhost
 compatibility: Requires 'geo.py' script in PATH. No API keys needed. Uses Nominatim (OpenStreetMap), Valhalla (FOSSGIS), OSM/Esri tiles, and ip-api.com.
 ---
 
@@ -15,7 +15,23 @@ Convert address to coordinates:
 ```bash
 geo.py geocode "1600 Pennsylvania Ave, Washington DC"
 geo.py geocode "Tokyo, Japan" --json
+geo.py geocode "Colorado, USA" --geojson --polygon
+geo.py geocode "Switzerland" --geojson --polygon --simplify 0.01
 ```
+
+`--polygon` returns whatever geometry OpenStreetMap actually holds for the place: a
+`Polygon`/`MultiPolygon` for an area (state, city, building footprint), but a `Point` for
+anything mapped as a single node - a peak, a small POI. **Check `.geometry.type` if you
+need an area**; there is no error or warning when you get a point back:
+
+```bash
+geo.py geocode "Colorado, USA" --geojson --polygon | jq -r '.geometry.type'   # Polygon
+geo.py geocode "Mount Rainier" --geojson --polygon | jq -r '.geometry.type'   # Point
+```
+
+Boundaries can be large - Switzerland is 1.3 MB raw - so pair it with
+`--simplify DEGREES` (Douglas-Peucker; `0.01` is roughly 1 km and typically cuts size by
+10-50x while keeping computed areas within ~0.3% of official figures).
 
 ### reverse
 Convert coordinates to address:
@@ -61,8 +77,17 @@ geo.py interact --center "Zermatt" --tiles satellite --script viz.js
 Tiles: `osm` (default), `topo`, `cyclosm`, `humanitarian`, `light`, `dark`,
 `satellite`, `terrain`. All keyless.
 
-**This command blocks.** Only run it when the user wants to look at a map, and tell
-them the URL. Use `--no-open` if a browser should not be launched.
+**This command blocks until interrupted.** Run it in the background, or the session
+hangs. It prints the URL it bound to - report that URL to the user:
+
+```
+  Serving map at http://127.0.0.1:8765/
+  3 features loaded  |  script: yes
+```
+
+Defaults to port 8765 and **falls back to a free port if that is taken**, so read the
+printed URL rather than assuming 8765. `--no-open` suppresses launching a browser.
+`--marker` splits on the *first* colon: `"LOCATION:Popup text"`.
 
 Styling follows the simplestyle-spec (`marker-color`, `stroke`, `fill`, ...), with
 `title`/`description` becoming the popup. `--script FILE.js` runs after load with
@@ -94,11 +119,62 @@ geo.py bbox --center "NYC" --radius 5 --unit km
 geo.py bbox --center "40.7128,-74.006" --radius 1 --unit miles --json --geojson
 ```
 
+## Verify the Match Before Trusting It
+
+Nominatim does free-form search and **will silently return a confidently wrong place**.
+Observed failures: `"Washington, USA"` resolves to Washington **D.C.**, not the state;
+`"134 Angell St, Providence, RI"` resolves to a street of the same name in Woonsocket,
+15 miles away. Nothing errors - you just get the wrong coordinates.
+
+Every command echoes the resolved address. **Read it back and check it matches intent**,
+and surface it to the user rather than only the coordinates.
+
+For programmatic checks, `--json` exposes Nominatim's own classification under `raw`:
+
+```bash
+# Is this actually a state/province, or did it match a city?
+geo.py geocode "Washington State, USA" --json | jq -r '.raw.type'    # administrative
+geo.py geocode "Washington, USA"       --json | jq -r '.raw.type'    # city  <- wrong
+```
+
+Useful `raw` fields: `type` and `class` (what kind of place matched), `addresstype`,
+`place_rank`, `importance`. When a query is ambiguous, disambiguate it - add the state,
+country, or the word "State"/"County" - and re-check rather than hoping.
+
+## Rate Limits and Batching
+
+These are free, shared services. When geocoding more than a handful of places, **sleep
+~1.1s between calls** or Nominatim will start refusing them.
+
+| Service | Used by | Limit |
+|---------|---------|-------|
+| Nominatim | geocode, reverse, any address input | 1 request/second |
+| Valhalla (FOSSGIS) | route | fair use; 1500 km max route |
+| ip-api.com | ip | 45 requests/minute |
+| OSM/Esri tiles | interact | fair use; keep attribution |
+
+Passing **coordinates instead of addresses skips geocoding entirely** - it is faster and
+consumes no quota, so resolve a place once and reuse its coordinates in a loop:
+
+```bash
+hub=$(geo.py geocode "Seattle, WA" --json | jq -r '"\(.latitude),\(.longitude)"')
+geo.py distance --from "$hub" --to "47.61,-122.20" --json   # no network geocoding
+```
+
+## Errors
+
+Failures print `Error: <message>` and exit **1**; success exits **0**. A geocode with no
+match prints `No results found for: ...` and also exits 1. Check the exit status rather
+than parsing prose.
+
 ## Smart Location Parsing
 
 Commands that accept locations understand both formats:
 - Raw coordinates: `"40.7128,-74.0060"` or `"40.7128 -74.0060"`
 - Addresses: `"New York City"` or `"Tokyo, Japan"`
+
+Southern-hemisphere coordinates that begin with a minus sign work normally
+(`geo.py reverse "-33.87,151.21"`, `--to "-33.87,151.21"`) - quote them as usual.
 
 ## Maps Links
 
@@ -125,11 +201,23 @@ In JSON output:
 
 ## GeoJSON Output
 
-Every location-producing command accepts `--geojson`, which pipes straight into the map:
+Every location-producing command accepts `--geojson` and writes a Feature or
+FeatureCollection to stdout, ready to pipe into the map:
+
 ```bash
+geo.py geocode "Tokyo" --geojson
 geo.py route --from A --to B --geojson | geo.py interact --geojson -
+geo.py distance --from A --to B --geojson      # both points plus the line between
+geo.py bbox --center "NYC" --radius 5 --geojson
 ```
-`route --geojson` carries the real road geometry, not just endpoints.
+
+`route --geojson` carries the real road geometry decoded from Valhalla's polyline, not
+just endpoints. `--geojson` takes precedence over `--json` when both are passed.
+
+`interact --geojson` accepts a FeatureCollection, a bare Feature, a raw geometry, or `-`
+for stdin, and is repeatable. It rebuilds the collection from `features`, so **foreign
+top-level members are dropped** - put configuration in a `--script` file, not alongside
+`features`.
 
 ## JSON Output
 
