@@ -14,9 +14,12 @@ Designed for agents and humans who need to work with geographic data.
 """
 
 import argparse
+import http.server
 import json
 import re
+import socket
 import sys
+import webbrowser
 from typing import Optional
 
 import requests
@@ -27,10 +30,23 @@ from geopy.point import Point
 # User agent for Nominatim (required)
 USER_AGENT = "geo.py-cli/1.0"
 
+# How many candidates to pull back so ambiguity is detectable. Same single
+# request either way, so this costs nothing against the rate limit.
+CANDIDATE_LIMIT = 5
+
+# Nominatim scores every match with an "importance". When the runner-up scores
+# this close to the winner the query is a genuine toss-up, not a clear hit.
+AMBIGUITY_RATIO = 0.85
+
 CLI_EPILOG = """\
 Examples:
   geo.py geocode "1600 Pennsylvania Ave, Washington DC"
   geo.py geocode "Tokyo, Japan" --json
+  geo.py geocode "Washington, USA" --limit 5
+  geo.py geocode "134 Angell St" --near "Providence, RI" --within 10
+  geo.py geocode "Washington State, USA" --expect-type administrative
+  geo.py geocode "Colorado" --geojson --polygon
+  geo.py geocode "Switzerland" --geojson --polygon --simplify 0.01
 
   geo.py reverse 40.7128,-74.0060
   geo.py reverse "51.5074, -0.1278"
@@ -41,6 +57,13 @@ Examples:
   geo.py route --from "Seattle" --to "Portland, OR"
   geo.py route --from "Times Square" --to "Central Park" --mode walking
   geo.py route --from "Boston" --to "NYC" --via "Hartford, CT" --json
+
+  geo.py interact --center "Seattle" --zoom 12
+  geo.py interact --marker "Space Needle:Start here" --marker "Pike Place Market"
+  geo.py route --from "Seattle" --to "Portland, OR" --geojson | geo.py interact --geojson -
+  geo.py interact --center "Denver" --script viz.js
+  geo.py interact --center "Zermatt" --tiles topo --zoom 14
+  geo.py interact --center "Manhattan" --tiles satellite
 
   geo.py destination --start "40.7128,-74.0060" --bearing 270 --distance 100
   geo.py destination --start "Seattle" --bearing 180 --distance 50 --unit km
@@ -61,6 +84,16 @@ Smart Location Parsing:
     "New York City"        Address (auto-geocoded)
     "Tokyo, Japan"         Address with region
 
+Basemap Tiles (interact):
+  osm           OpenStreetMap standard (default)
+  topo          OpenTopoMap, contour lines
+  cyclosm       CyclOSM, cycling infrastructure
+  humanitarian  Humanitarian OSM Team style
+  light         Esri Light Gray Canvas
+  dark          Esri Dark Gray Canvas
+  satellite     Esri World Imagery
+  terrain       Esri World Topo
+
 Travel Modes (route):
   driving       Car (default)
   walking       Pedestrian
@@ -74,6 +107,172 @@ Distance Units:
   m, meters     Meters
   ft, feet      Feet
   nm            Nautical miles
+"""
+
+
+# Keyless raster tile providers. Each is free to use under its own fair-use
+# policy - keep traffic light and leave the attribution intact.
+TILE_LAYERS = {
+    "osm": {
+        "url": "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+        "attribution": '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+        "max_zoom": 19,
+    },
+    "topo": {
+        "url": "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png",
+        "attribution": '&copy; OpenStreetMap contributors | &copy; <a href="https://opentopomap.org">OpenTopoMap</a> (CC-BY-SA)',
+        "max_zoom": 17,
+    },
+    "cyclosm": {
+        "url": "https://{s}.tile-cyclosm.openstreetmap.fr/cyclosm/{z}/{x}/{y}.png",
+        "attribution": '&copy; OpenStreetMap contributors | tiles <a href="https://www.cyclosm.org/">CyclOSM</a>',
+        "max_zoom": 20,
+    },
+    "humanitarian": {
+        "url": "https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png",
+        "attribution": '&copy; OpenStreetMap contributors | tiles <a href="https://www.hotosm.org/">HOT</a>',
+        "max_zoom": 20,
+    },
+    "light": {
+        "url": "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}",
+        "attribution": 'Tiles &copy; <a href="https://www.esri.com/">Esri</a> | &copy; OpenStreetMap contributors',
+        "max_zoom": 16,
+    },
+    "dark": {
+        "url": "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}",
+        "attribution": 'Tiles &copy; <a href="https://www.esri.com/">Esri</a> | &copy; OpenStreetMap contributors',
+        "max_zoom": 16,
+    },
+    "satellite": {
+        "url": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        "attribution": 'Tiles &copy; <a href="https://www.esri.com/">Esri</a>, Maxar, Earthstar Geographics',
+        "max_zoom": 19,
+    },
+    "terrain": {
+        "url": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}",
+        "attribution": 'Tiles &copy; <a href="https://www.esri.com/">Esri</a>',
+        "max_zoom": 19,
+    },
+}
+
+MAP_PAGE = """\
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>geo.py</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  html, body, #map { height: 100%; margin: 0; }
+  .leaflet-popup-content { font: 13px/1.45 system-ui, sans-serif; }
+  .leaflet-popup-content dt { font-weight: 600; margin-top: 4px; }
+  .leaflet-popup-content dd { margin: 0; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<script>
+const CENTER = __CENTER__;
+const ZOOM = __ZOOM__;
+const HAS_SCRIPT = __HAS_SCRIPT__;
+
+const map = L.map('map');
+L.tileLayer(__TILE_URL__, {
+  maxZoom: __TILE_MAX_ZOOM__,
+  attribution: __TILE_ATTRIBUTION__
+}).addTo(map);
+
+// Layers keyed for --script to reach: layers.data is the loaded GeoJSON
+const layers = {};
+let geo = null;
+
+function esc(value) {
+  return String(value).replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[c]));
+}
+
+// simplestyle-spec: https://github.com/mapbox/simplestyle-spec
+function styleFor(feature) {
+  const p = feature.properties || {};
+  const geometry = feature.geometry || {};
+  // Leaflet applies style() to pointToLayer results too, so honour marker-color
+  // here or it gets overwritten with the line defaults below.
+  if (geometry.type && geometry.type.indexOf('Point') !== -1 && p['marker-color']) {
+    return { color: '#fff', weight: 2, fillColor: p['marker-color'], fillOpacity: 1 };
+  }
+  return {
+    color: p['stroke'] || '#3388ff',
+    weight: p['stroke-width'] || 4,
+    opacity: p['stroke-opacity'] !== undefined ? p['stroke-opacity'] : 0.9,
+    fillColor: p['fill'] || p['stroke'] || '#3388ff',
+    fillOpacity: p['fill-opacity'] !== undefined ? p['fill-opacity'] : 0.2
+  };
+}
+
+function markerFor(feature, latlng) {
+  const p = feature.properties || {};
+  const color = p['marker-color'];
+  const sizes = { small: 6, medium: 8, large: 11 };
+  if (!color) return L.marker(latlng);
+  return L.circleMarker(latlng, {
+    radius: sizes[p['marker-size']] || 8,
+    color: '#fff', weight: 2, fillColor: color, fillOpacity: 1
+  });
+}
+
+const STYLE_KEYS = /^(stroke|fill|marker-)/;
+
+function popupFor(feature, layer) {
+  const p = feature.properties || {};
+  const parts = [];
+  if (p.title) parts.push('<strong>' + esc(p.title) + '</strong>');
+  if (p.description) parts.push(esc(p.description));
+
+  const extra = Object.keys(p)
+    .filter(k => k !== 'title' && k !== 'description' && !STYLE_KEYS.test(k));
+  if (extra.length) {
+    parts.push('<dl>' + extra
+      .map(k => '<dt>' + esc(k) + '</dt><dd>' + esc(p[k]) + '</dd>').join('') + '</dl>');
+  }
+  if (parts.length) layer.bindPopup(parts.join('<br>'));
+}
+
+function frame() {
+  const bounds = layers.data && layers.data.getBounds();
+  if (CENTER) {
+    map.setView(CENTER, ZOOM === null ? 13 : ZOOM);
+  } else if (bounds && bounds.isValid()) {
+    map.fitBounds(bounds, { padding: [40, 40] });
+    if (ZOOM !== null) map.setZoom(ZOOM);
+  } else {
+    map.setView([0, 0], ZOOM === null ? 2 : ZOOM);
+  }
+}
+
+fetch('data.json')
+  .then(r => r.json())
+  .then(data => {
+    geo = data;
+    if (data.features && data.features.length) {
+      layers.data = L.geoJSON(data, {
+        style: styleFor, pointToLayer: markerFor, onEachFeature: popupFor
+      }).addTo(map);
+    }
+    frame();
+    // Load user script last so map, L, layers and geo are all ready
+    if (HAS_SCRIPT) {
+      const tag = document.createElement('script');
+      tag.src = 'script.js';
+      document.body.appendChild(tag);
+    }
+  })
+  .catch(err => console.error('geo.py: failed to load data.json', err));
+</script>
+</body>
+</html>
 """
 
 
@@ -180,23 +379,67 @@ class GeoClient:
         if not result:
             raise GeoError(f"Could not geocode address: {location}")
 
+        _warn_if_ambiguous(result, location)
+
         return result["latitude"], result["longitude"], result["address"]
 
-    def geocode(self, address: str) -> Optional[dict]:
+    def geocode(
+        self,
+        address: str,
+        polygon: bool = False,
+        limit: int = CANDIDATE_LIMIT,
+        viewbox: Optional[list] = None,
+    ) -> Optional[dict]:
         """
         Geocode an address to coordinates.
 
-        Returns dict with lat, lng, address, and raw response.
+        With polygon=True, also ask Nominatim for the administrative boundary
+        geometry, returned under "boundary" when the place has one.
+
+        Runners-up come back under "alternatives" so callers can see whether the
+        query was ambiguous. viewbox restricts the search to [(lat, lng), (lat, lng)].
+
+        Returns dict with lat, lng, address, alternatives, and raw response.
         """
         try:
-            location = self.geolocator.geocode(address, addressdetails=True)
-            if not location:
+            kwargs = {"addressdetails": True}
+            if polygon:
+                kwargs["geometry"] = "geojson"
+            if viewbox:
+                kwargs["viewbox"] = viewbox
+                kwargs["bounded"] = True
+            if limit > 1:
+                kwargs["exactly_one"] = False
+                kwargs["limit"] = limit
+
+            found = self.geolocator.geocode(address, **kwargs)
+            if not found:
                 return None
+
+            if limit > 1:
+                found = list(found)
+                if not found:
+                    return None
+                location, runners_up = found[0], found[1:]
+            else:
+                location, runners_up = found, []
 
             return {
                 "latitude": location.latitude,
                 "longitude": location.longitude,
                 "address": location.address,
+                "boundary": location.raw.get("geojson") if polygon else None,
+                "alternatives": [
+                    {
+                        "latitude": alt.latitude,
+                        "longitude": alt.longitude,
+                        "address": alt.address,
+                        "type": alt.raw.get("type"),
+                        "class": alt.raw.get("class"),
+                        "importance": float(alt.raw.get("importance") or 0),
+                    }
+                    for alt in runners_up
+                ],
                 "raw": location.raw,
             }
         except Exception as e:
@@ -444,6 +687,7 @@ class GeoClient:
             legs.append({
                 "distance": _distance_units(leg["summary"]["length"]),
                 "duration_seconds": round(leg["summary"]["time"]),
+                "shape": _decode_polyline(leg["shape"]) if leg.get("shape") else [],
                 "steps": maneuvers,
             })
 
@@ -594,6 +838,188 @@ def _format_duration(seconds: float) -> str:
     return f"{secs}s"
 
 
+def _decode_polyline(encoded: str, precision: int = 6) -> list[tuple[float, float]]:
+    """
+    Decode an encoded polyline into [(lat, lng), ...].
+
+    Valhalla encodes route shapes at precision 6, unlike the Google/OSRM
+    default of 5.
+    """
+    factor = 10 ** precision
+    coordinates = []
+    index = lat = lng = 0
+
+    while index < len(encoded):
+        for is_latitude in (True, False):
+            shift = result = 0
+            while True:
+                byte = ord(encoded[index]) - 63
+                index += 1
+                result |= (byte & 0x1f) << shift
+                shift += 5
+                if byte < 0x20:
+                    break
+            delta = ~(result >> 1) if result & 1 else result >> 1
+            if is_latitude:
+                lat += delta
+            else:
+                lng += delta
+        coordinates.append((lat / factor, lng / factor))
+
+    return coordinates
+
+
+def _viewbox_around(client: "GeoClient", near: str, within: float, unit: str) -> list:
+    """
+    Build a Nominatim viewbox around a reference location.
+
+    Free-form search will happily match a same-named street in the wrong town;
+    constraining the search area is the reliable fix.
+    """
+    lat, lng, _ = client.parse_location(near)
+    radius_km = _to_kilometers(within, unit)
+    bounds = client.calculate_bbox(lat, lng, radius_km)["bounds"]
+
+    return [(bounds["south"], bounds["west"]), (bounds["north"], bounds["east"])]
+
+
+def _to_kilometers(value: float, unit: str) -> float:
+    """Convert a distance in the given unit to kilometres."""
+    unit = unit.lower()
+    if unit in ("km", "kilometers"):
+        return value
+    if unit in ("m", "meters"):
+        return value / 1000
+    if unit in ("ft", "feet"):
+        return value * 0.0003048
+    if unit in ("nm", "nautical"):
+        return value * 1.852
+    return value * 1.60934  # miles
+
+
+def _ambiguous_alternative(result: dict) -> Optional[dict]:
+    """
+    Return the runner-up when it is close enough to be a real toss-up.
+
+    Nominatim happily returns the same place twice, so identical addresses are
+    skipped rather than reported as competing answers.
+    """
+    top = float((result.get("raw") or {}).get("importance") or 0)
+    if not top:
+        return None
+
+    for alt in result.get("alternatives") or []:
+        if alt["address"] == result["address"]:
+            continue
+        return alt if alt["importance"] / top >= AMBIGUITY_RATIO else None
+
+    return None
+
+
+def _place_kinds(result: dict) -> set:
+    """Nominatim's own classification of what kind of place matched."""
+    raw = result.get("raw") or {}
+    return {str(raw.get(key)).lower() for key in ("type", "class", "addresstype")
+            if raw.get(key)}
+
+
+def _warn_if_ambiguous(result: dict, query: str) -> None:
+    """Warn on stderr when a query had a near-equal runner-up. Keeps stdout pipeable."""
+    alt = _ambiguous_alternative(result)
+    if not alt:
+        return
+
+    print(f"Warning: '{query}' is ambiguous - two close matches", file=sys.stderr)
+    print(f"  using:   {result['address']}", file=sys.stderr)
+    print(f"  also:    {alt['address']} ({alt['type']})", file=sys.stderr)
+    print("  narrow the query, or use --near, or --limit to list candidates",
+          file=sys.stderr)
+
+
+def _simplify_ring(points: list, tolerance: float) -> list:
+    """Douglas-Peucker simplification of a coordinate ring."""
+    if len(points) < 3:
+        return points
+
+    keep = [False] * len(points)
+    keep[0] = keep[-1] = True
+    stack = [(0, len(points) - 1)]
+
+    while stack:
+        start, end = stack.pop()
+        ax, ay = points[start]
+        bx, by = points[end]
+        dx, dy = bx - ax, by - ay
+        span = dx * dx + dy * dy
+
+        worst, index = tolerance, None
+        for i in range(start + 1, end):
+            px, py = points[i]
+            if span == 0:
+                dist = ((px - ax) ** 2 + (py - ay) ** 2) ** 0.5
+            else:
+                t = max(0, min(1, ((px - ax) * dx + (py - ay) * dy) / span))
+                dist = ((px - ax - t * dx) ** 2 + (py - ay - t * dy) ** 2) ** 0.5
+            if dist > worst:
+                worst, index = dist, i
+
+        if index is not None:
+            keep[index] = True
+            stack.append((start, index))
+            stack.append((index, end))
+
+    return [pt for pt, k in zip(points, keep) if k]
+
+
+def _simplify_geometry(geometry: dict, tolerance: float) -> dict:
+    """Simplify Polygon/MultiPolygon coordinates, leaving other types alone."""
+    if not geometry or tolerance <= 0:
+        return geometry
+
+    kind = geometry.get("type")
+    if kind == "Polygon":
+        rings = [_simplify_ring(r, tolerance) for r in geometry["coordinates"]]
+    elif kind == "MultiPolygon":
+        rings = [[_simplify_ring(r, tolerance) for r in poly]
+                 for poly in geometry["coordinates"]]
+    else:
+        return geometry
+
+    return {"type": kind, "coordinates": rings}
+
+
+def _geojson_feature(geometry: dict, properties: Optional[dict] = None) -> dict:
+    """Wrap a geometry in a GeoJSON Feature."""
+    return {
+        "type": "Feature",
+        "geometry": geometry,
+        "properties": {k: v for k, v in (properties or {}).items() if v is not None},
+    }
+
+
+def _geojson_point(lat: float, lng: float, properties: Optional[dict] = None) -> dict:
+    """Build a GeoJSON Point feature. Note GeoJSON orders coordinates lng, lat."""
+    return _geojson_feature({"type": "Point", "coordinates": [lng, lat]}, properties)
+
+
+def _geojson_line(points: list, properties: Optional[dict] = None) -> dict:
+    """Build a GeoJSON LineString feature from [(lat, lng), ...]."""
+    return _geojson_feature(
+        {"type": "LineString", "coordinates": [[lng, lat] for lat, lng in points]},
+        properties,
+    )
+
+
+def _geojson_collection(features: list) -> dict:
+    """Wrap features in a GeoJSON FeatureCollection."""
+    return {"type": "FeatureCollection", "features": features}
+
+
+def _print_geojson(obj: dict) -> None:
+    """Print GeoJSON to stdout, ready to pipe into 'geo.py interact --geojson -'."""
+    print(json.dumps(obj, indent=2))
+
+
 def _maps_url(lat: float, lng: float) -> str:
     """Generate Google Maps URL for coordinates."""
     return f"https://www.google.com/maps?q={lat},{lng}"
@@ -628,20 +1054,186 @@ def _directions_url(waypoints: list[tuple[float, float]], mode: str = "driving")
 # Command handlers
 # ============================================================================
 
+def _load_geojson_inputs(sources: list) -> list:
+    """
+    Read GeoJSON from files or stdin ('-') and flatten into a list of features.
+
+    Accepts a FeatureCollection, a bare Feature, or a raw geometry.
+    """
+    features = []
+
+    for source in sources:
+        try:
+            raw = sys.stdin.read() if source == "-" else open(source).read()
+        except OSError as e:
+            raise GeoError(f"Could not read {source}: {e}")
+
+        try:
+            data = json.loads(raw)
+        except ValueError as e:
+            label = "stdin" if source == "-" else source
+            raise GeoError(f"{label} is not valid JSON: {e}")
+
+        kind = data.get("type") if isinstance(data, dict) else None
+        if kind == "FeatureCollection":
+            features.extend(data.get("features") or [])
+        elif kind == "Feature":
+            features.append(data)
+        elif kind:
+            features.append(_geojson_feature(data))
+        else:
+            label = "stdin" if source == "-" else source
+            raise GeoError(f"{label} is not GeoJSON (no 'type' member)")
+
+    return features
+
+
+def _serve_map(page: str, data: dict, script: Optional[str], port: int, open_browser: bool) -> int:
+    """Serve the Leaflet page on localhost until interrupted."""
+    routes = {
+        "/": ("text/html; charset=utf-8", page.encode()),
+        "/data.json": ("application/json", json.dumps(data).encode()),
+        "/script.js": ("application/javascript", (script or "").encode()),
+    }
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            path = self.path.split("?")[0]
+            if path not in routes:
+                self.send_error(404)
+                return
+            content_type, body = routes[path]
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass  # keep the terminal readable
+
+    try:
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    except OSError as e:
+        if port == 0:
+            raise GeoError(f"Could not start server: {e}")
+        print(f"  Port {port} unavailable ({e.strerror}), using a free port instead")
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+
+    url = f"http://127.0.0.1:{server.server_address[1]}/"
+    feature_count = len(data.get("features") or [])
+    print(f"\n  Serving map at {url}")
+    print(f"  {feature_count} feature{'s' if feature_count != 1 else ''} loaded"
+          + ("  |  script: yes" if script else ""))
+    print("  Press Ctrl+C to stop\n", flush=True)
+
+    if open_browser:
+        webbrowser.open(url)
+
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("  Stopped")
+    finally:
+        server.server_close()
+
+    return 0
+
+
+def cmd_interact(client: GeoClient, args: argparse.Namespace) -> int:
+    """Handle the interact command."""
+    try:
+        features = _load_geojson_inputs(args.geojson or [])
+
+        # --marker "LOCATION:Popup text", location resolved the usual way
+        for marker in args.marker or []:
+            location, _, popup = marker.partition(":")
+            lat, lng, address = client.parse_location(location.strip())
+            features.append(_geojson_point(lat, lng, {
+                "title": popup.strip() or location.strip(),
+                "description": address,
+                "marker-color": "#e6550d",
+            }))
+
+        center = None
+        if args.center:
+            lat, lng, _ = client.parse_location(args.center)
+            center = [lat, lng]
+
+        script = None
+        if args.script:
+            try:
+                script = open(args.script).read()
+            except OSError as e:
+                raise GeoError(f"Could not read {args.script}: {e}")
+
+        tiles = TILE_LAYERS[args.tiles]
+        if args.zoom is not None and args.zoom > tiles["max_zoom"]:
+            print(f"  Note: {args.tiles} tiles stop at zoom {tiles['max_zoom']}")
+
+        page = (MAP_PAGE
+                .replace("__CENTER__", json.dumps(center))
+                .replace("__ZOOM__", json.dumps(args.zoom))
+                .replace("__HAS_SCRIPT__", "true" if script else "false")
+                .replace("__TILE_URL__", json.dumps(tiles["url"]))
+                .replace("__TILE_ATTRIBUTION__", json.dumps(tiles["attribution"]))
+                .replace("__TILE_MAX_ZOOM__", str(tiles["max_zoom"])))
+
+        return _serve_map(page, _geojson_collection(features), script,
+                          args.port, not args.no_open)
+    except GeoError as e:
+        print(f"Error: {e}")
+        return 1
+
+
 def cmd_geocode(client: GeoClient, args: argparse.Namespace) -> int:
     """Handle the geocode command."""
     try:
-        result = client.geocode(args.address)
+        viewbox = None
+        if args.near:
+            viewbox = _viewbox_around(client, args.near, args.within, args.unit)
+
+        result = client.geocode(args.address, polygon=args.polygon, viewbox=viewbox)
 
         if not result:
-            print(f"No results found for: {args.address}")
+            if args.near:
+                print(f"No results for '{args.address}' within "
+                      f"{args.within} {args.unit} of {args.near}")
+            else:
+                print(f"No results found for: {args.address}")
             return 1
+
+        _warn_if_ambiguous(result, args.address)
+
+        if args.expect_type:
+            expected = {kind.strip().lower() for kind in args.expect_type.split(",")}
+            found = _place_kinds(result)
+            if not expected & found:
+                print(f"Error: expected {'/'.join(sorted(expected))} but matched "
+                      f"{'/'.join(sorted(found)) or 'nothing'}", file=sys.stderr)
+                print(f"  {result['address']}", file=sys.stderr)
+                return 1
 
         maps_url = _maps_url(result['latitude'], result['longitude'])
 
-        if args.json:
-            import json
+        if args.geojson:
+            properties = {"title": args.address, "description": result["address"],
+                          "marker-color": "#e6550d"}
+            boundary = result.get("boundary")
+            if boundary:
+                properties["latitude"] = result["latitude"]
+                properties["longitude"] = result["longitude"]
+                _print_geojson(_geojson_feature(
+                    _simplify_geometry(boundary, args.simplify), properties))
+            else:
+                if args.polygon:
+                    print(f"No boundary geometry for: {args.address}", file=sys.stderr)
+                _print_geojson(_geojson_point(
+                    result["latitude"], result["longitude"], properties))
+        elif args.json:
             result["maps_url"] = maps_url
+            result["alternatives"] = result["alternatives"][:max(0, args.limit - 1)]
             print(json.dumps(result, indent=2))
         else:
             print(f"\n  Geocode: {args.address}")
@@ -650,6 +1242,15 @@ def cmd_geocode(client: GeoClient, args: argparse.Namespace) -> int:
             print(f"  Longitude:  {result['longitude']}")
             print(f"  Address:    {result['address']}")
             print(f"  Map:        {maps_url}")
+
+            others = result["alternatives"][:max(0, args.limit - 1)]
+            if others:
+                print()
+                print(f"  Other matches for '{args.address}':")
+                for number, alt in enumerate(others, start=2):
+                    print(f"    {number}. {alt['address']}")
+                    print(f"       {alt['type'] or '?'}, importance {alt['importance']:.3f}"
+                          f"  ({alt['latitude']}, {alt['longitude']})")
             print()
 
         return 0
@@ -678,8 +1279,13 @@ def cmd_reverse(client: GeoClient, args: argparse.Namespace) -> int:
 
         maps_url = _maps_url(lat, lng)
 
-        if args.json:
-            import json
+        if args.geojson:
+            _print_geojson(_geojson_point(
+                lat, lng,
+                {"title": f"{lat}, {lng}", "description": result["address"],
+                 "marker-color": "#e6550d"},
+            ))
+        elif args.json:
             result["maps_url"] = maps_url
             print(json.dumps(result, indent=2))
         else:
@@ -730,8 +1336,22 @@ def cmd_distance(client: GeoClient, args: argparse.Namespace) -> int:
         from_maps = _maps_url(from_lat, from_lng)
         to_maps = _maps_url(to_lat, to_lng)
 
-        if args.json:
-            import json
+        if args.geojson:
+            from_display = from_addr or f"{from_lat}, {from_lng}"
+            to_display = to_addr or f"{to_lat}, {to_lng}"
+            label = f"{_format_distance(result['distance'], args.unit)} ({cardinal})"
+            _print_geojson(_geojson_collection([
+                _geojson_point(from_lat, from_lng,
+                               {"title": "From", "description": from_display,
+                                "marker-color": "#31a354"}),
+                _geojson_point(to_lat, to_lng,
+                               {"title": "To", "description": to_display,
+                                "marker-color": "#e6550d"}),
+                _geojson_line([(from_lat, from_lng), (to_lat, to_lng)],
+                              {"title": label, "stroke": "#3182bd",
+                               "stroke-width": 3, "stroke-opacity": 0.8}),
+            ]))
+        elif args.json:
             result["bearing"] = {"degrees": bearing, "cardinal": cardinal}
             result["from"]["maps_url"] = from_maps
             result["to"]["maps_url"] = to_maps
@@ -795,7 +1415,36 @@ def cmd_route(client: GeoClient, args: argparse.Namespace) -> int:
         result = client.route(waypoints, mode=args.mode, steps=not args.no_steps)
         directions_url = _directions_url(waypoints, args.mode)
 
-        if args.json:
+        if args.geojson:
+            features = []
+            for index, leg in enumerate(result["legs"], start=1):
+                if not leg["shape"]:
+                    continue
+                features.append(_geojson_line(leg["shape"], {
+                    "title": f"Leg {index}" if len(result["legs"]) > 1 else result["mode"],
+                    "description": (
+                        f"{_format_distance(leg['distance'], args.unit)}"
+                        f", {_format_duration(leg['duration_seconds'])}"
+                    ),
+                    "mode": result["mode"],
+                    "stroke": "#3182bd",
+                    "stroke-width": 5,
+                    "stroke-opacity": 0.8,
+                }))
+            for position, stop in enumerate(stops):
+                if position == 0:
+                    title, color = "Start", "#31a354"
+                elif position == len(stops) - 1:
+                    title, color = "Destination", "#e6550d"
+                else:
+                    title, color = f"Stop {position}", "#756bb1"
+                features.append(_geojson_point(
+                    stop["latitude"], stop["longitude"],
+                    {"title": title, "description": stop["address"] or stop["input"],
+                     "marker-color": color},
+                ))
+            _print_geojson(_geojson_collection(features))
+        elif args.json:
             result["stops"] = stops
             result["directions_url"] = directions_url
             print(json.dumps(result, indent=2))
@@ -892,8 +1541,21 @@ def cmd_destination(client: GeoClient, args: argparse.Namespace) -> int:
         cardinal = _bearing_to_cardinal(args.bearing)
         dest_maps = _maps_url(dest_lat, dest_lng)
 
-        if args.json:
-            import json
+        if args.geojson:
+            _print_geojson(_geojson_collection([
+                _geojson_point(start_lat, start_lng,
+                               {"title": "Start",
+                                "description": start_addr or f"{start_lat}, {start_lng}",
+                                "marker-color": "#31a354"}),
+                _geojson_point(dest_lat, dest_lng,
+                               {"title": "Destination",
+                                "description": dest_addr or f"{dest_lat}, {dest_lng}",
+                                "marker-color": "#e6550d"}),
+                _geojson_line([(start_lat, start_lng), (dest_lat, dest_lng)],
+                              {"title": f"{args.distance} {args.unit} at {args.bearing}° ({cardinal})",
+                               "stroke": "#3182bd", "stroke-width": 3}),
+            ]))
+        elif args.json:
             result["distance_input"] = {"value": args.distance, "unit": args.unit}
             result["destination"]["maps_url"] = dest_maps
             if start_addr:
@@ -976,7 +1638,18 @@ def cmd_ip(client: GeoClient, args: argparse.Namespace) -> int:
         result = client.geolocate_ip(args.ip)
         maps_url = _maps_url(result['latitude'], result['longitude'])
 
-        if args.json:
+        if args.geojson:
+            where = ", ".join(
+                part for part in (result.get("city"), result.get("region"), result.get("country"))
+                if part
+            )
+            _print_geojson(_geojson_point(
+                result["latitude"], result["longitude"],
+                {"title": result.get("ip"), "description": where,
+                 "isp": result.get("isp"), "timezone": result.get("timezone"),
+                 "marker-color": "#756bb1"},
+            ))
+        elif args.json:
             import json
             result["maps_url"] = maps_url
             print(json.dumps(result, indent=2))
@@ -1032,16 +1705,22 @@ def cmd_bbox(client: GeoClient, args: argparse.Namespace) -> int:
         result = client.calculate_bbox(center_lat, center_lng, radius_km)
         maps_url = _maps_url(center_lat, center_lng)
 
-        if args.json:
-            import json
-            # Return just the GeoJSON if requested
-            if args.geojson:
-                print(json.dumps(result["geojson"], indent=2))
-            else:
-                result["maps_url"] = maps_url
-                if center_addr:
-                    result["center"]["address"] = center_addr
-                print(json.dumps(result, indent=2))
+        if args.geojson:
+            geojson = dict(result["geojson"])
+            geojson["properties"] = {
+                **(geojson.get("properties") or {}),
+                "title": center_addr or f"{center_lat}, {center_lng}",
+                "description": f"{args.radius} {args.unit} radius",
+                "stroke": "#3182bd",
+                "fill": "#3182bd",
+                "fill-opacity": 0.15,
+            }
+            _print_geojson(geojson)
+        elif args.json:
+            result["maps_url"] = maps_url
+            if center_addr:
+                result["center"]["address"] = center_addr
+            print(json.dumps(result, indent=2))
         else:
             center_display = center_addr or f"{center_lat}, {center_lng}"
             b = result["bounds"]
@@ -1064,12 +1743,6 @@ def cmd_bbox(client: GeoClient, args: argparse.Namespace) -> int:
             print(f"  bbox:       {bbox_str}")
             print()
 
-            if args.geojson:
-                import json
-                print("  GeoJSON:")
-                print(json.dumps(result["geojson"], indent=2))
-                print()
-
         return 0
     except GeoError as e:
         print(f"Error: {e}")
@@ -1079,6 +1752,53 @@ def cmd_bbox(client: GeoClient, args: argparse.Namespace) -> int:
 # ============================================================================
 # Main CLI
 # ============================================================================
+
+COORDINATE_TOKEN = re.compile(
+    r"^[-+]?\d{1,3}(?:\.\d+)?\s*[,\s]\s*[-+]?\d{1,3}(?:\.\d+)?$"
+)
+
+
+def _value_option_strings(parser: argparse.ArgumentParser) -> set:
+    """Collect every option string that takes a value, subcommands included."""
+    names = set()
+
+    for action in parser._actions:
+        if action.option_strings and action.nargs != 0:
+            names.update(action.option_strings)
+        if isinstance(action, argparse._SubParsersAction):
+            for subparser in action.choices.values():
+                names |= _value_option_strings(subparser)
+
+    return names
+
+
+def _normalize_coordinate_args(argv: list, value_options: set) -> list:
+    """
+    Let southern hemisphere coordinates survive argparse.
+
+    argparse reads any token starting with '-' as an option, so '-33.87,151.21'
+    is rejected wherever a location is expected. Attach such a value to the flag
+    it belongs to with '=', and push a bare positional behind a '--' guard.
+    """
+    normalized = []
+    positionals = []
+
+    for token in argv:
+        if token.startswith("-") and COORDINATE_TOKEN.match(token):
+            previous = normalized[-1] if normalized else ""
+            if previous in value_options:
+                normalized[-1] = f"{previous}={token}"
+            else:
+                positionals.append(token)
+            continue
+        normalized.append(token)
+
+    if positionals:
+        normalized.append("--")
+        normalized.extend(positionals)
+
+    return normalized
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(
@@ -1100,9 +1820,54 @@ def main() -> int:
         help="Address to geocode (e.g., '1600 Pennsylvania Ave, Washington DC')"
     )
     geocode_parser.add_argument(
+        "--expect-type",
+        metavar="TYPE",
+        help="Fail unless the match is one of these OSM types "
+             "(comma separated, e.g. 'administrative,city')"
+    )
+    geocode_parser.add_argument(
+        "--near", "-n",
+        help="Restrict the search to the area around this location"
+    )
+    geocode_parser.add_argument(
+        "--within", "-w",
+        type=float,
+        default=25.0,
+        help="Radius used by --near (default: 25)"
+    )
+    geocode_parser.add_argument(
+        "--unit", "-u",
+        default="miles",
+        choices=["mi", "miles", "km", "kilometers", "m", "meters", "ft", "feet"],
+        help="Unit for --within (default: miles)"
+    )
+    geocode_parser.add_argument(
+        "--limit", "-l",
+        type=int,
+        default=1,
+        help="Show this many candidate matches (default: 1)"
+    )
+    geocode_parser.add_argument(
+        "--polygon", "-p",
+        action="store_true",
+        help="Include the administrative boundary polygon, when the place has one"
+    )
+    geocode_parser.add_argument(
+        "--simplify",
+        type=float,
+        default=0.0,
+        metavar="DEGREES",
+        help="Simplify boundary geometry by this tolerance (e.g. 0.01)"
+    )
+    geocode_parser.add_argument(
         "--json", "-j",
         action="store_true",
         help="Output as JSON"
+    )
+    geocode_parser.add_argument(
+        "--geojson", "-g",
+        action="store_true",
+        help="Output as GeoJSON (pipe into 'geo.py interact --geojson -')"
     )
 
     # reverse command
@@ -1119,6 +1884,11 @@ def main() -> int:
         "--json", "-j",
         action="store_true",
         help="Output as JSON"
+    )
+    reverse_parser.add_argument(
+        "--geojson", "-g",
+        action="store_true",
+        help="Output as GeoJSON (pipe into 'geo.py interact --geojson -')"
     )
 
     # distance command
@@ -1160,6 +1930,11 @@ def main() -> int:
         "--json", "-j",
         action="store_true",
         help="Output as JSON"
+    )
+    distance_parser.add_argument(
+        "--geojson", "-g",
+        action="store_true",
+        help="Output as GeoJSON (pipe into 'geo.py interact --geojson -')"
     )
 
     # route command
@@ -1207,6 +1982,58 @@ def main() -> int:
         action="store_true",
         help="Output as JSON"
     )
+    route_parser.add_argument(
+        "--geojson", "-g",
+        action="store_true",
+        help="Output as GeoJSON (pipe into 'geo.py interact --geojson -')"
+    )
+
+    # interact command
+    interact_parser = subparsers.add_parser(
+        "interact",
+        help="Serve an interactive Leaflet map on localhost",
+        description="Serve a full-page Leaflet map on localhost, optionally loaded with GeoJSON."
+    )
+    interact_parser.add_argument(
+        "--center", "-c",
+        help="Map center (coordinates or address); defaults to fitting the data"
+    )
+    interact_parser.add_argument(
+        "--zoom", "-z",
+        type=int,
+        help="Zoom level (0-19)"
+    )
+    interact_parser.add_argument(
+        "--geojson", "-g",
+        action="append",
+        help="GeoJSON file to render, or '-' for stdin (repeatable)"
+    )
+    interact_parser.add_argument(
+        "--marker", "-m",
+        action="append",
+        help="Marker as 'LOCATION:Popup text' (repeatable)"
+    )
+    interact_parser.add_argument(
+        "--script", "-s",
+        help="JavaScript file run after load, with map, L, layers and geo in scope"
+    )
+    interact_parser.add_argument(
+        "--tiles", "-t",
+        default="osm",
+        choices=sorted(TILE_LAYERS),
+        help="Basemap tiles (default: osm)"
+    )
+    interact_parser.add_argument(
+        "--port", "-p",
+        type=int,
+        default=8765,
+        help="Port to serve on (default: 8765)"
+    )
+    interact_parser.add_argument(
+        "--no-open",
+        action="store_true",
+        help="Do not open a browser automatically"
+    )
 
     # destination command
     dest_parser = subparsers.add_parser(
@@ -1242,6 +2069,11 @@ def main() -> int:
         action="store_true",
         help="Output as JSON"
     )
+    dest_parser.add_argument(
+        "--geojson", "-g",
+        action="store_true",
+        help="Output as GeoJSON (pipe into 'geo.py interact --geojson -')"
+    )
 
     # validate command
     validate_parser = subparsers.add_parser(
@@ -1275,6 +2107,11 @@ def main() -> int:
         "--json", "-j",
         action="store_true",
         help="Output as JSON"
+    )
+    ip_parser.add_argument(
+        "--geojson", "-g",
+        action="store_true",
+        help="Output as GeoJSON (pipe into 'geo.py interact --geojson -')"
     )
 
     # bbox command
@@ -1311,8 +2148,10 @@ def main() -> int:
         help="Output as JSON"
     )
 
-    # Parse args
-    args = parser.parse_args()
+    # Parse args, rescuing coordinates that begin with a negative latitude
+    args = parser.parse_args(
+        _normalize_coordinate_args(sys.argv[1:], _value_option_strings(parser))
+    )
 
     if not args.command:
         parser.print_help()
@@ -1327,6 +2166,7 @@ def main() -> int:
         "reverse": cmd_reverse,
         "distance": cmd_distance,
         "route": cmd_route,
+        "interact": cmd_interact,
         "destination": cmd_destination,
         "validate": cmd_validate,
         "ip": cmd_ip,

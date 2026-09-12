@@ -8,6 +8,8 @@ A CLI tool for working with latitude/longitude and geography. Built for agents a
 - **Reverse Geocode** - Convert coordinates to addresses
 - **Distance** - Calculate distance between two points
 - **Route** - Turn-by-turn driving, walking, and cycling directions
+- **Interact** - Serve an interactive Leaflet map on localhost
+- **GeoJSON** - Every command can emit GeoJSON to pipe into the map
 - **Destination** - Find a point given start, bearing, and distance
 - **Validate** - Check if coordinates are valid
 - **IP Geolocation** - Get location from an IP address
@@ -57,6 +59,19 @@ Output:
   Address:    White House, 1600, Pennsylvania Avenue Northwest...
   Map:        maps://?ll=38.8976387,-77.0365528&z=18
 ```
+
+**Avoiding wrong matches.** Free-form geocoding can return a confidently wrong place -
+`"Washington, USA"` is Washington D.C., not the state. `geocode` warns on stderr when a
+query is ambiguous, and offers three ways to pin it down:
+
+```bash
+geo.py geocode "Washington, USA" --limit 5              # list candidates
+geo.py geocode "134 Angell St" --near "Providence, RI"  # constrain the search area
+geo.py geocode "Washington State, USA" --expect-type administrative   # exit 1 on mismatch
+```
+
+`--near` takes an address or coordinates with `--within` (default 25 miles).
+`--expect-type` accepts a comma-separated list checked against OSM's classification.
 
 ### reverse
 
@@ -131,6 +146,58 @@ Each step carries a detail line with whatever context applies: the street it put
 own distance and time, and the running total from the start.
 
 Use `--no-steps` for just the summary, and `--json` for machine-readable output.
+
+### interact
+
+Serve a full-page interactive Leaflet map on localhost and open it in the browser.
+
+```bash
+geo.py interact --center "Seattle" --zoom 12
+geo.py interact --marker "Space Needle:Start here" --marker "Pike Place Market"
+geo.py interact --geojson places.json --tiles light
+geo.py interact --center "Zermatt" --tiles satellite --zoom 14
+geo.py interact --center "Denver" --script viz.js --no-open
+```
+
+Anything that emits GeoJSON pipes straight in:
+
+```bash
+geo.py route --from "Seattle" --to "Portland, OR" --geojson | geo.py interact --geojson -
+geo.py bbox --center "NYC" --radius 5 --geojson | geo.py interact --geojson -
+```
+
+Features are styled from their properties using the
+[simplestyle-spec](https://github.com/mapbox/simplestyle-spec): `marker-color`,
+`marker-size`, `stroke`, `stroke-width`, `stroke-opacity`, `fill`, `fill-opacity`.
+`title` and `description` become the popup; any other property is listed beneath it.
+
+**Basemap tiles** (`--tiles`), all keyless:
+
+| Value | Basemap |
+|-------|---------|
+| `osm` | OpenStreetMap standard (default) |
+| `topo` | OpenTopoMap, contour lines (max zoom 17) |
+| `cyclosm` | CyclOSM, cycling infrastructure |
+| `humanitarian` | Humanitarian OSM Team style |
+| `light` | Esri Light Gray Canvas (max zoom 16) |
+| `dark` | Esri Dark Gray Canvas (max zoom 16) |
+| `satellite` | Esri World Imagery |
+| `terrain` | Esri World Topo |
+
+**Custom JavaScript** (`--script`) runs after the map and data are ready, with `map`,
+`L`, `layers` (`layers.data` is the loaded GeoJSON layer) and `geo` (the raw
+FeatureCollection) in scope:
+
+```javascript
+// viz.js
+L.circle([37.9, -122.06], {radius: 1500, color: 'crimson'})
+ .addTo(map).bindPopup('coverage area');
+console.log(geo.features.length + ' features');
+map.fitBounds(layers.data.getBounds());
+```
+
+The server binds to `127.0.0.1` only, picks a free port if the requested one is busy,
+and runs until you press Ctrl+C.
 
 ### destination
 
@@ -270,6 +337,21 @@ geo.py geocode "NYC" --json | jq -r '.maps_url'
 # maps://?ll=40.7127281,-74.0060152&z=18
 ```
 
+## GeoJSON Output
+
+Every command that produces a location accepts `--geojson`, emitting a Feature or
+FeatureCollection on stdout, ready to pipe into `geo.py interact --geojson -`:
+
+```bash
+geo.py geocode "Tokyo" --geojson
+geo.py route --from A --to B --geojson
+geo.py distance --from A --to B --geojson    # both points plus the line between
+geo.py bbox --center "NYC" --radius 5 --geojson
+```
+
+Note that `route --geojson` includes the real road geometry, decoded from Valhalla's
+polyline, not just the endpoints.
+
 ## JSON Output
 
 All commands support `--json` / `-j` for machine-readable output:
@@ -284,6 +366,7 @@ geo.py geocode "NYC" --json | jq '.latitude, .longitude'
 |---------|---------|-------------|
 | Geocoding | [Nominatim](https://nominatim.org/) (OpenStreetMap) | 1 req/sec |
 | Routing | [Valhalla](https://valhalla1.openstreetmap.de/) (FOSSGIS public instance) | fair use; 1500 km max route |
+| Map tiles | OpenStreetMap, OpenTopoMap, CyclOSM, HOT, Esri | fair use; keep attribution |
 | IP Geolocation | [ip-api.com](http://ip-api.com/) | 45 req/min |
 
 No API keys required. Please respect rate limits.
