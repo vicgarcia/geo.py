@@ -44,6 +44,7 @@ Examples:
   geo.py geocode "Tokyo, Japan" --json
   geo.py geocode "Washington, USA" --limit 5
   geo.py geocode "134 Angell St" --near "Providence, RI" --within 10
+  geo.py geocode "Washington State, USA" --expect-type administrative
   geo.py geocode "Colorado" --geojson --polygon
   geo.py geocode "Switzerland" --geojson --polygon --simplify 0.01
 
@@ -915,6 +916,13 @@ def _ambiguous_alternative(result: dict) -> Optional[dict]:
     return None
 
 
+def _place_kinds(result: dict) -> set:
+    """Nominatim's own classification of what kind of place matched."""
+    raw = result.get("raw") or {}
+    return {str(raw.get(key)).lower() for key in ("type", "class", "addresstype")
+            if raw.get(key)}
+
+
 def _warn_if_ambiguous(result: dict, query: str) -> None:
     """Warn on stderr when a query had a near-equal runner-up. Keeps stdout pipeable."""
     alt = _ambiguous_alternative(result)
@@ -1197,6 +1205,15 @@ def cmd_geocode(client: GeoClient, args: argparse.Namespace) -> int:
             return 1
 
         _warn_if_ambiguous(result, args.address)
+
+        if args.expect_type:
+            expected = {kind.strip().lower() for kind in args.expect_type.split(",")}
+            found = _place_kinds(result)
+            if not expected & found:
+                print(f"Error: expected {'/'.join(sorted(expected))} but matched "
+                      f"{'/'.join(sorted(found)) or 'nothing'}", file=sys.stderr)
+                print(f"  {result['address']}", file=sys.stderr)
+                return 1
 
         maps_url = _maps_url(result['latitude'], result['longitude'])
 
@@ -1801,6 +1818,12 @@ def main() -> int:
     geocode_parser.add_argument(
         "address",
         help="Address to geocode (e.g., '1600 Pennsylvania Ave, Washington DC')"
+    )
+    geocode_parser.add_argument(
+        "--expect-type",
+        metavar="TYPE",
+        help="Fail unless the match is one of these OSM types "
+             "(comma separated, e.g. 'administrative,city')"
     )
     geocode_parser.add_argument(
         "--near", "-n",
