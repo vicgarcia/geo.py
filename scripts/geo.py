@@ -1370,17 +1370,6 @@ def cmd_distance(client: GeoClient, args: argparse.Namespace) -> int:
             print(f"  Bearing:    {bearing}° ({cardinal})")
             print()
 
-            # Show all units
-            if args.all_units:
-                print("  All Units:")
-                d = result["distance"]
-                print(f"    {d['miles']:>12,.3f} miles")
-                print(f"    {d['kilometers']:>12,.3f} km")
-                print(f"    {d['meters']:>12,.3f} meters")
-                print(f"    {d['feet']:>12,.3f} feet")
-                print(f"    {d['nautical_miles']:>12,.3f} nautical miles")
-                print()
-
         return 0
     except GeoError as e:
         return _fail(str(e))
@@ -1748,11 +1737,6 @@ def main() -> int:
         default="miles",
         choices=["mi", "miles", "km", "kilometers", "m", "meters", "ft", "feet", "nm"],
         help="Distance unit (default: miles)"
-    )
-    distance_parser.add_argument(
-        "--all-units", "-a",
-        action="store_true",
-        help="Show distance in all units"
     )
     _add_output_options(distance_parser)
 

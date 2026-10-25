@@ -87,7 +87,7 @@ Calculate distance between two points. Supports smart location parsing - use coo
 ```bash
 geo.py distance --from "New York" --to "Los Angeles"
 geo.py distance --from "40.7128,-74.0060" --to "34.0522,-118.2437" --unit km
-geo.py distance --from "Paris" --to "London" --all-units
+geo.py distance --from "Paris" --to "London" --json   # every unit
 ```
 
 Output:
