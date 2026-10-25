@@ -152,24 +152,27 @@ class ClientTests(OfflineCase):
                 }],
             },
         }
-        result = self.client.route([(0, 0), (0, 1)], mode="cycling")
+        result = self.client.route([(0, 0), (0, 1)], mode="walking")
         self.assertEqual(result["distance"]["kilometers"], 2)
         self.assertEqual(result["duration_seconds"], 120)
         self.assertTrue(result["has_toll"])
         self.assertEqual(result["legs"][0]["steps"][-1]["cumulative_distance"]["kilometers"], 2)
-        self.assertEqual(self.session.post.call_args.kwargs["json"]["costing"], "bicycle")
+        self.assertEqual(self.session.post.call_args.kwargs["json"]["costing"], "pedestrian")
         response.raise_for_status.assert_called_once()
         self.assertNotIn("costing_options", self.session.post.call_args.kwargs["json"])
         summary = self.client.route([(0, 0), (0, 1)], steps=False)
         self.assertEqual(summary["legs"][0]["steps"], [])
-        avoided = self.client.route([(0, 0), (0, 1)], mode="truck",
+        avoided = self.client.route([(0, 0), (0, 1)], mode="walking",
                                     avoid=("highways", "tolls"), shortest=True)
         self.assertEqual(self.session.post.call_args.kwargs["json"]["costing_options"],
-                         {"truck": {"exclude_tolls": True, "exclude_highways": True,
+                         {"pedestrian": {"exclude_tolls": True, "exclude_highways": True,
                                     "shortest": True}})
         self.assertEqual((avoided["avoid"], avoided["shortest"]), (["tolls", "highways"], True))
         with self.assertRaises(geo.GeoError):
             self.client.route([(0, 0), (0, 1)], avoid=("bridges",))
+        for removed in ["cycling", "truck", "motorcycle"]:
+            with self.subTest(mode=removed), self.assertRaises(geo.GeoError):
+                self.client.route([(0, 0), (0, 1)], mode=removed)
         response.raise_for_status.side_effect = geo.requests.HTTPError("503")
         with self.assertRaises(geo.GeoError):
             self.client.route([(0, 0), (0, 1)])

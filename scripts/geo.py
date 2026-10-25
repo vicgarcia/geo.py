@@ -95,8 +95,6 @@ Basemap Tiles (interact):
 Travel Modes (route):
   driving       Car (default)
   walking       Pedestrian
-  cycling       Bicycle
-  truck         Truck
 
 Distance Units:
   mi, miles     Miles (default)
@@ -283,8 +281,6 @@ class GeoClient:
     COSTING_MODES = {
         "driving": "auto",
         "walking": "pedestrian",
-        "cycling": "bicycle",
-        "truck": "truck",
     }
 
     def __init__(self):
@@ -947,8 +943,6 @@ def _directions_url(waypoints: list[tuple[float, float]], mode: str = "driving")
     travel_modes = {
         "driving": "driving",
         "walking": "walking",
-        "cycling": "bicycling",
-        "truck": "driving",
     }
 
     origin = f"{waypoints[0][0]},{waypoints[0][1]}"
@@ -1763,7 +1757,7 @@ def main() -> int:
     route_parser.add_argument(
         "--mode", "-m",
         default="driving",
-        choices=["driving", "walking", "cycling", "truck"],
+        choices=["driving", "walking"],
         help="Travel mode (default: driving)"
     )
     route_parser.add_argument(

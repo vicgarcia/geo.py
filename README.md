@@ -7,7 +7,7 @@ A CLI tool for working with latitude/longitude and geography. Built for agents a
 - **Geocode** - Convert addresses to coordinates
 - **Reverse Geocode** - Convert coordinates to addresses
 - **Distance** - Calculate distance between two points
-- **Route** - Turn-by-turn driving, walking, and cycling directions
+- **Route** - Turn-by-turn driving and walking directions, avoiding tolls/highways/ferries on request
 - **Interact** - Serve an interactive Leaflet map on localhost
 - **GeoJSON** - Geocoding, reverse geocoding, distance calculations, and routes can emit GeoJSON
 
@@ -114,9 +114,9 @@ geo.py route --from "Hollywood, FL" --to "Islamorada, FL" --avoid tolls,highways
 geo.py route --from "Hollywood, FL" --to "Islamorada, FL" --shortest
 ```
 
-Travel modes: `driving` (default), `walking`, `cycling`, `truck`.
+Travel modes: `driving` (default) and `walking`.
 
-Route options work with any mode:
+Route options work with either mode:
 - `--avoid tolls,highways,ferries` - any combination, comma separated or repeated. These are
   hard exclusions; when no other route exists the result still uses them and a warning
   goes to stderr.

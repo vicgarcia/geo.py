@@ -48,7 +48,7 @@ geo.py distance --from "40.7128,-74.0060" --to "34.0522,-118.2437" --unit km
 ```
 
 ### route
-Get turn-by-turn driving/walking/cycling directions:
+Get turn-by-turn driving or walking directions:
 ```bash
 geo.py route --from "Seattle" --to "Portland, OR"
 geo.py route --from "Times Square" --to "Central Park" --mode walking --unit km
@@ -58,7 +58,7 @@ geo.py route --from "Hollywood, FL" --to "Islamorada, FL" --avoid tolls,highways
 geo.py route --from "Hollywood, FL" --to "Islamorada, FL" --shortest
 ```
 
-Modes: `driving` (default), `walking`, `cycling`, `truck`. Options work with any mode:
+Modes: `driving` (default) and `walking`. Options work with either mode:
 `--avoid tolls,highways,ferries` (hard exclusions - if no other route exists the result
 still uses them and stderr warns) and `--shortest` (distance instead of time). JSON output
 echoes them as `avoid` and `shortest`.
