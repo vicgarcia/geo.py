@@ -1504,7 +1504,21 @@ def _add_output_options(parser: argparse.ArgumentParser, geojson: bool = True) -
         )
 
 
+def _use_utf8_streams() -> None:
+    """
+    Read and write UTF-8 even when stdio is a pipe on Windows.
+
+    Windows hands pipes the legacy code page (cp1252), so a degree sign or '·'
+    came out as a lone byte that UTF-8 terminals render as a replacement glyph.
+    """
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        encoding = (getattr(stream, "encoding", None) or "").lower().replace("-", "")
+        if encoding != "utf8" and hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8")
+
+
 def main() -> int:
+    _use_utf8_streams()
     parser = argparse.ArgumentParser(
         description="geo.py - CLI tool for working with lat/lng and geography",
         formatter_class=argparse.RawDescriptionHelpFormatter,

@@ -223,6 +223,14 @@ class ClientTests(OfflineCase):
 
 
 class CommandTests(OfflineCase):
+    def test_legacy_code_page_streams_switch_to_utf8(self):
+        streams = [io.TextIOWrapper(io.BytesIO(), encoding="cp1252") for _ in range(3)]
+        with patch.object(geo.sys, "stdin", streams[0]),                 patch.object(geo.sys, "stdout", streams[1]),                 patch.object(geo.sys, "stderr", streams[2]):
+            geo._use_utf8_streams()
+            print("90.0° ·", end="", flush=True)
+        self.assertEqual([s.encoding for s in streams], ["utf-8"] * 3)
+        self.assertEqual(streams[1].buffer.getvalue().decode("utf-8"), "90.0° ·")
+
     def test_removed_commands_are_not_public_cli(self):
         self.assert_failure("bbox", "--center", "42,-71", "--radius", "1")
         self.assert_failure("ip", "8.8.8.8")
