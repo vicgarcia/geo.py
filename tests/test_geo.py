@@ -251,6 +251,20 @@ class CommandTests(OfflineCase):
         self.assert_failure("validate", "40.7128,-74.0060")
         self.assert_failure("destination", "--start", "0,0", "--bearing", "90", "--distance", "1")
 
+    def test_map_input_mistakes_are_clear_errors(self):
+        with patch.object(geo, "_serve_map") as serve:
+            with patch.object(geo.sys, "stdin", io.StringIO("")):
+                code, out, err = self.cli("interact", "--geojson", "-", "--no-open")
+            self.assertEqual((code, out), (1, ""))
+            self.assertIn("command before the pipe", err)
+            with patch.object(geo.sys, "stdin", io.StringIO('{"type":"Point","coordinates":[0,0]}')):
+                code, _, err = self.cli("interact", "--geojson", "-", "--geojson", "-", "--no-open")
+            self.assertIn("only be given once", err)
+            serve.assert_not_called()
+        code, _, err = self.cli("interact", "--port", "70000")
+        self.assertEqual(code, 2)
+        self.assertIn("port must be 0-65535", err)
+
     def test_map_loads_valid_data_without_network(self):
         data = {"type": "Point", "coordinates": [1, 2]}
         with patch.object(geo.sys, "stdin", io.StringIO(json.dumps(data))), \

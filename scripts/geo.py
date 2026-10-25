@@ -1037,9 +1037,13 @@ def _load_geojson_inputs(sources: list) -> list:
     Accepts a FeatureCollection, a bare Feature, or a raw geometry.
     """
     features = []
+    if sources.count("-") > 1:
+        raise GeoError("stdin ('-') can only be given once")
 
     for source in sources:
         raw = sys.stdin.read() if source == "-" else _read_text(source)
+        if source == "-" and not raw.strip():
+            raise GeoError("No GeoJSON on stdin - did the command before the pipe fail?")
 
         try:
             data = json.loads(raw)
@@ -1563,6 +1567,14 @@ def _normalize_coordinate_args(argv: list, value_options: set) -> list:
     return normalized
 
 
+def _port(value: str) -> int:
+    """argparse type for a TCP port, so a bad value is a usage error, not a traceback."""
+    port = int(value)
+    if not 0 <= port <= 65535:
+        raise argparse.ArgumentTypeError(f"port must be 0-65535, got {port}")
+    return port
+
+
 def _add_output_options(parser: argparse.ArgumentParser, geojson: bool = True) -> None:
     parser.add_argument("--json", "-j", action="store_true", help="Output as JSON")
     if geojson:
@@ -1754,7 +1766,7 @@ def main() -> int:
     )
     interact_parser.add_argument(
         "--port", "-p",
-        type=int,
+        type=_port,
         default=8765,
         help="Port to serve on (default: 8765)"
     )
