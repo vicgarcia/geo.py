@@ -25,7 +25,7 @@ from typing import Optional
 import requests
 from geopy.extra.rate_limiter import RateLimiter
 from geopy.geocoders import Nominatim
-from geopy.distance import geodesic, great_circle
+from geopy.distance import geodesic
 from geopy.point import Point
 
 # User agent for Nominatim (required)
@@ -471,25 +471,13 @@ class GeoClient:
         from_lng: float,
         to_lat: float,
         to_lng: float,
-        method: str = "geodesic"
     ) -> dict:
-        """
-        Calculate distance between two points.
-
-        method: 'geodesic' (more accurate) or 'great_circle' (faster)
-        """
-        point1 = (from_lat, from_lng)
-        point2 = (to_lat, to_lng)
-
-        if method == "geodesic":
-            dist = geodesic(point1, point2)
-        else:
-            dist = great_circle(point1, point2)
+        """Calculate the geodesic (WGS-84 ellipsoid) distance between two points."""
+        dist = geodesic((from_lat, from_lng), (to_lat, to_lng))
 
         return {
             "from": {"latitude": from_lat, "longitude": from_lng},
             "to": {"latitude": to_lat, "longitude": to_lng},
-            "method": method,
             "distance": {
                 "miles": round(dist.miles, 3),
                 "kilometers": round(dist.km, 3),
@@ -1330,7 +1318,7 @@ def cmd_distance(client: GeoClient, args: argparse.Namespace) -> int:
         to_lat, to_lng, to_addr = client.parse_location(args.to_loc)
 
         # Calculate distance
-        result = client.calculate_distance(from_lat, from_lng, to_lat, to_lng, args.method)
+        result = client.calculate_distance(from_lat, from_lng, to_lat, to_lng)
 
         # Calculate bearing too
         bearing = client.calculate_bearing(from_lat, from_lng, to_lat, to_lng)
@@ -1760,12 +1748,6 @@ def main() -> int:
         default="miles",
         choices=["mi", "miles", "km", "kilometers", "m", "meters", "ft", "feet", "nm"],
         help="Distance unit (default: miles)"
-    )
-    distance_parser.add_argument(
-        "--method",
-        default="geodesic",
-        choices=["geodesic", "great_circle"],
-        help="Calculation method (default: geodesic, more accurate)"
     )
     distance_parser.add_argument(
         "--all-units", "-a",

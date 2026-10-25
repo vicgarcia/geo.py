@@ -119,12 +119,9 @@ class ClientTests(OfflineCase):
         with self.assertRaises(geo.GeoError):
             self.client.parse_location("91,181")
 
-    def test_distance_methods_and_bearings(self):
-        for method, expected in [("geodesic", 111.319), ("great_circle", 111.195)]:
-            with self.subTest(method=method):
-                distance = self.client.calculate_distance(0, 0, 0, 1, method)
-                self.assertAlmostEqual(distance["distance"]["kilometers"], expected, places=2)
-                self.assertEqual(distance["method"], method)
+    def test_geodesic_distance_and_bearings(self):
+        distance = self.client.calculate_distance(0, 0, 0, 1)
+        self.assertAlmostEqual(distance["distance"]["kilometers"], 111.319, places=2)
         for lat, lng, bearing in [(1, 0, 0), (0, 1, 90), (-1, 0, 180), (0, -1, 270)]:
             self.assertEqual(self.client.calculate_bearing(0, 0, lat, lng), bearing)
         self.assertEqual(self.client.calculate_distance(42, -71, 42, -71)["distance"]["meters"], 0)
