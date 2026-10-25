@@ -280,12 +280,27 @@ class CommandTests(OfflineCase):
                     self.assert_failure("geocode", "Example", "--limit", limit)
             fetch.assert_not_called()
 
-    def test_invalid_simplify_rejected_before_network(self):
-        with patch.object(self.client, "geocode") as fetch:
-            for tolerance in ["-1", "nan", "inf"]:
-                with self.subTest(tolerance=tolerance):
-                    self.assert_failure("geocode", "Example", "--simplify", tolerance)
-            fetch.assert_not_called()
+    def test_large_boundaries_are_simplified_automatically(self):
+        import math as m
+        circle = [[round(m.cos(2 * m.pi * i / 6000), 6), round(m.sin(2 * m.pi * i / 6000), 6)]
+                  for i in range(6000)]
+        big = {"type": "Polygon", "coordinates": [circle + [circle[0]]]}
+        small = {"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 0]]]}
+        self.assertEqual(geo._fit_boundary(small), small)
+        fitted = geo._fit_boundary(big)
+        ring = fitted["coordinates"][0]
+        self.assertLessEqual(geo._count_positions(fitted), geo.MAX_BOUNDARY_POINTS)
+        self.assertGreater(len(ring), 100)
+        self.assertEqual(ring[0], ring[-1])
+        # Through the CLI: geojson gets the fitted outline, and the old flag is gone
+        located = place(geojson=big)
+        self.locator.geocode.return_value = [located]
+        code, out, err = self.cli("geocode", "Big", "--geojson", "--polygon")
+        self.assertEqual(code, 0, err)
+        self.assertLessEqual(geo._count_positions(json.loads(out)["geometry"]),
+                             geo.MAX_BOUNDARY_POINTS)
+        self.assertIn("Simplified boundary", err)
+        self.assert_failure("geocode", "Big", "--polygon", "--simplify", "0.01")
 
     def test_near_preserves_bounded_viewbox(self):
         with patch.object(self.client, "geocode", return_value=result()) as fetch:

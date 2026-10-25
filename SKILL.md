@@ -16,7 +16,7 @@ Convert address to coordinates:
 geo.py geocode "1600 Pennsylvania Ave, Washington DC"
 geo.py geocode "Tokyo, Japan" --json
 geo.py geocode "Colorado, USA" --geojson --polygon
-geo.py geocode "Switzerland" --geojson --polygon --simplify 0.01
+geo.py geocode "Switzerland" --geojson --polygon
 ```
 
 `--polygon` returns whatever geometry OpenStreetMap actually holds for the place: a
@@ -29,10 +29,10 @@ geo.py geocode "Colorado, USA" --geojson --polygon | jq -r '.geometry.type'   # 
 geo.py geocode "Mount Rainier" --geojson --polygon | jq -r '.geometry.type'   # Point
 ```
 
-Boundaries can be large - Switzerland is 1.3 MB raw - so pair it with
-`--simplify DEGREES` (Douglas-Peucker; `0.01` is roughly 1 km and typically cuts size by
-10-50x). Collapsed rings retain their original vertices; simplification does not
-guarantee topology preservation or a particular area accuracy.
+Boundaries can be large - Switzerland is 1.3 MB raw - so any outline over 2,000 points
+is simplified automatically (Douglas-Peucker, tightest tolerance that fits) for both
+`--geojson` and `--json`, with a note on stderr. Collapsed rings retain their original
+vertices; simplification does not guarantee topology preservation.
 
 ### reverse
 Convert coordinates to address:

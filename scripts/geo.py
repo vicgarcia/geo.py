@@ -40,6 +40,10 @@ CANDIDATE_LIMIT = 5
 # this close to the winner the query is a genuine toss-up, not a clear hit.
 AMBIGUITY_RATIO = 0.85
 
+# Boundaries bigger than this are simplified until they fit. A country outline
+# can run past 100k positions, which makes the map sluggish and the JSON huge.
+MAX_BOUNDARY_POINTS = 2000
+
 # "lat,lng" or "lat lng". Range checks happen after parsing, in coordinate_errors().
 COORDINATE_PATTERN = re.compile(r"^([-+]?\d+(?:\.\d*)?)\s*[,\s]\s*([-+]?\d+(?:\.\d*)?)$")
 
@@ -51,7 +55,7 @@ Examples:
   geo.py geocode "134 Angell St" --near "Providence, RI" --within 10
   geo.py geocode "Washington State, USA" --expect-type administrative
   geo.py geocode "Colorado" --geojson --polygon
-  geo.py geocode "Switzerland" --geojson --polygon --simplify 0.01
+  geo.py geocode "Switzerland" --geojson --polygon
 
   geo.py reverse 40.7128,-74.0060
   geo.py reverse "51.5074, -0.1278"
@@ -380,7 +384,7 @@ class GeoClient:
                 "latitude": location.latitude,
                 "longitude": location.longitude,
                 "address": location.address,
-                "boundary": location.raw.get("geojson") if polygon else None,
+                "boundary": location.raw.pop("geojson", None) if polygon else None,
                 "alternatives": [
                     {
                         "latitude": alt.latitude,
@@ -853,6 +857,31 @@ def _simplify_geometry(geometry: dict, tolerance: float) -> dict:
     return {"type": kind, "coordinates": rings}
 
 
+def _count_positions(geometry: dict) -> int:
+    """Count the positions in a Polygon/MultiPolygon; other types count as zero."""
+    kind = geometry.get("type")
+    if kind == "Polygon":
+        return sum(len(ring) for ring in geometry["coordinates"])
+    if kind == "MultiPolygon":
+        return sum(len(ring) for poly in geometry["coordinates"] for ring in poly)
+    return 0
+
+
+def _fit_boundary(geometry: dict) -> dict:
+    """
+    Simplify a boundary until it has at most MAX_BOUNDARY_POINTS positions.
+
+    Tolerance starts near 10 m and doubles, so small outlines stay exact and large
+    ones stop simplifying as soon as they fit. Each pass works on the previous
+    result, which keeps a 100k-point country fast.
+    """
+    fitted, tolerance = geometry, 0.0001
+    while _count_positions(fitted) > MAX_BOUNDARY_POINTS and tolerance <= 1:
+        fitted = _simplify_geometry(fitted, tolerance)
+        tolerance *= 2
+    return fitted
+
+
 def _geojson_feature(geometry: dict, properties: Optional[dict] = None) -> dict:
     """Wrap a geometry in a GeoJSON Feature."""
     return {
@@ -1154,8 +1183,6 @@ def cmd_geocode(client: GeoClient, args: argparse.Namespace) -> int:
     try:
         if args.limit < 1:
             raise GeoError("--limit must be at least 1")
-        if not math.isfinite(args.simplify) or args.simplify < 0:
-            raise GeoError("--simplify must be a non-negative finite tolerance")
         viewbox = None
         if args.near:
             viewbox = _viewbox_around(client, args.near, args.within, args.unit)
@@ -1171,6 +1198,14 @@ def cmd_geocode(client: GeoClient, args: argparse.Namespace) -> int:
             return _fail(f"No results found for: {args.address}")
 
         _warn_if_ambiguous(result, args.address)
+
+        if result.get("boundary"):
+            original = _count_positions(result["boundary"])
+            result["boundary"] = _fit_boundary(result["boundary"])
+            fitted = _count_positions(result["boundary"])
+            if fitted < original:
+                print(f"Simplified boundary from {original:,} to {fitted:,} points",
+                      file=sys.stderr)
 
         if args.expect_type:
             expected = {kind.strip().lower() for kind in args.expect_type.split(",")}
@@ -1190,8 +1225,7 @@ def cmd_geocode(client: GeoClient, args: argparse.Namespace) -> int:
             if boundary:
                 properties["latitude"] = result["latitude"]
                 properties["longitude"] = result["longitude"]
-                _print_geojson(_geojson_feature(
-                    _simplify_geometry(boundary, args.simplify), properties))
+                _print_geojson(_geojson_feature(boundary, properties))
             else:
                 if args.polygon:
                     print(f"No boundary geometry for: {args.address}", file=sys.stderr)
@@ -1602,14 +1636,8 @@ def main() -> int:
     geocode_parser.add_argument(
         "--polygon", "-p",
         action="store_true",
-        help="Include the administrative boundary polygon, when the place has one"
-    )
-    geocode_parser.add_argument(
-        "--simplify",
-        type=float,
-        default=0.0,
-        metavar="DEGREES",
-        help="Simplify boundary geometry by this tolerance (e.g. 0.01)"
+        help="Include the boundary polygon, when the place has one "
+             f"(simplified past {MAX_BOUNDARY_POINTS:,} points)"
     )
     _add_output_options(geocode_parser)
 
