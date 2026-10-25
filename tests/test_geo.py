@@ -113,8 +113,9 @@ class ClientTests(OfflineCase):
         for text in ["-33.87,151.21", " -33.87 151.21 ", "-33.87, 151.21"]:
             self.assertEqual(self.client.parse_location(text), (-33.87, 151.21, None))
         self.locator.geocode.assert_not_called()
-        self.assertFalse(self.client.validate_coordinates(91, 181)["valid"])
-        self.assertTrue(self.client.validate_coordinates(0, 0)["warnings"])
+        self.assertEqual(len(self.client.coordinate_errors(91, 181)), 2)
+        self.assertEqual(self.client.coordinate_errors(0, 0), [])
+        self.assertTrue(self.client.coordinate_errors(float("nan"), 0))
         with self.assertRaises(geo.GeoError):
             self.client.parse_location("91,181")
 

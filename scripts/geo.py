@@ -304,40 +304,14 @@ class GeoClient:
         lat, lng = float(match.group(1)), float(match.group(2))
         return lat, lng
 
-    def validate_coordinates(self, lat: float, lng: float) -> dict:
-        """
-        Validate if coordinates are within valid ranges.
-
-        Returns dict with validation results and details.
-        """
+    def coordinate_errors(self, lat: float, lng: float) -> list[str]:
+        """List the reasons a lat/lng pair is out of range; empty when valid."""
         errors = []
-        warnings = []
-
-        # Check latitude range
         if not math.isfinite(lat) or lat < -90 or lat > 90:
             errors.append(f"Latitude {lat} out of range [-90, 90]")
-
-        # Check longitude range
         if not math.isfinite(lng) or lng < -180 or lng > 180:
             errors.append(f"Longitude {lng} out of range [-180, 180]")
-
-        # Check for suspicious values
-        if lat == 0 and lng == 0:
-            warnings.append("Coordinates are at Null Island (0,0) - often indicates missing data")
-
-        # Determine hemisphere info
-        lat_hemisphere = "N" if lat >= 0 else "S"
-        lng_hemisphere = "E" if lng >= 0 else "W"
-
-        return {
-            "valid": len(errors) == 0,
-            "latitude": lat,
-            "longitude": lng,
-            "lat_hemisphere": lat_hemisphere,
-            "lng_hemisphere": lng_hemisphere,
-            "errors": errors,
-            "warnings": warnings,
-        }
+        return errors
 
     def parse_location(self, location: str) -> tuple[float, float, Optional[str]]:
         """
@@ -350,9 +324,9 @@ class GeoClient:
         # Try to parse as coordinates first
         if self._looks_like_coordinates(location):
             lat, lng = self._parse_coordinates(location)
-            validation = self.validate_coordinates(lat, lng)
-            if not validation["valid"]:
-                raise GeoError(f"Invalid coordinates: {', '.join(validation['errors'])}")
+            errors = self.coordinate_errors(lat, lng)
+            if errors:
+                raise GeoError(f"Invalid coordinates: {', '.join(errors)}")
             return lat, lng, None
 
         # Otherwise, geocode as address
@@ -1225,10 +1199,9 @@ def cmd_reverse(client: GeoClient, args: argparse.Namespace) -> int:
         # Parse coordinates
         lat, lng = client._parse_coordinates(args.coordinates)
 
-        # Validate
-        validation = client.validate_coordinates(lat, lng)
-        if not validation["valid"]:
-            return _fail(f"Invalid coordinates - {', '.join(validation['errors'])}")
+        errors = client.coordinate_errors(lat, lng)
+        if errors:
+            return _fail(f"Invalid coordinates - {', '.join(errors)}")
 
         result = client.reverse_geocode(lat, lng)
 
