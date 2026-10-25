@@ -97,27 +97,23 @@ Distance Units:
 """
 
 
-# Keyless raster tile providers. Each is free to use under its own fair-use
-# policy - keep traffic light and leave the attribution intact.
+# Keyless raster tile providers, each under its own fair-use policy - keep traffic
+# light. Private use only, so the map shows no attribution bar.
 TILE_LAYERS = {
     "osm": {
         "url": "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
-        "attribution": '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
         "max_zoom": 19,
     },
     "satellite": {
         "url": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-        "attribution": 'Tiles &copy; <a href="https://www.esri.com/">Esri</a>, Maxar, Earthstar Geographics',
         "max_zoom": 19,
     },
     "light": {
         "url": "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}",
-        "attribution": 'Tiles &copy; <a href="https://www.esri.com/">Esri</a> | &copy; OpenStreetMap contributors',
         "max_zoom": 16,
     },
     "dark": {
         "url": "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}",
-        "attribution": 'Tiles &copy; <a href="https://www.esri.com/">Esri</a> | &copy; OpenStreetMap contributors',
         "max_zoom": 16,
     },
 }
@@ -144,10 +140,9 @@ MAP_PAGE = """\
 const CENTER = __CENTER__;
 const ZOOM = __ZOOM__;
 
-const map = L.map('map');
+const map = L.map('map', { attributionControl: false });
 L.tileLayer(__TILE_URL__, {
-  maxZoom: __TILE_MAX_ZOOM__,
-  attribution: __TILE_ATTRIBUTION__
+  maxZoom: __TILE_MAX_ZOOM__
 }).addTo(map);
 
 let dataLayer = null;
@@ -1083,7 +1078,6 @@ def cmd_interact(client: GeoClient, args: argparse.Namespace) -> int:
                 .replace("__CENTER__", json.dumps(center))
                 .replace("__ZOOM__", json.dumps(args.zoom))
                 .replace("__TILE_URL__", json.dumps(tiles["url"]))
-                .replace("__TILE_ATTRIBUTION__", json.dumps(tiles["attribution"]))
                 .replace("__TILE_MAX_ZOOM__", str(tiles["max_zoom"])))
 
         return _serve_map(page, _geojson_collection(features),

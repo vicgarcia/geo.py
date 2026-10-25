@@ -239,7 +239,7 @@ geo.py geocode "NYC" --json | jq '.latitude, .longitude'
 |---------|---------|-------------|
 | Geocoding | [Nominatim](https://nominatim.org/) (OpenStreetMap) | 1 req/sec |
 | Routing | [Valhalla](https://valhalla1.openstreetmap.de/) (FOSSGIS public instance) | fair use; 1500 km max route |
-| Map tiles | OpenStreetMap, Esri | fair use; keep attribution |
+| Map tiles | OpenStreetMap, Esri | fair use; private use, no attribution shown |
 
 No API keys required. Forward and reverse Nominatim lookups share automatic
 1.1-second pacing within each process. When launching separate processes in a loop,

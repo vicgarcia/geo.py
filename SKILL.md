@@ -158,7 +158,7 @@ These are free, shared services. Forward and reverse Nominatim lookups share aut
 |---------|---------|-------|
 | Nominatim | geocode, reverse, any address input | 1 request/second |
 | Valhalla (FOSSGIS) | route | fair use; 1500 km max route |
-| OSM/Esri tiles | interact | fair use; keep attribution |
+| OSM/Esri tiles | interact | fair use |
 
 Passing **coordinates instead of addresses skips geocoding entirely** - it is faster and
 consumes no quota, so resolve a place once and reuse its coordinates in a loop:
