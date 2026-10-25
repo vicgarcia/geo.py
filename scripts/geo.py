@@ -16,13 +16,14 @@ Designed for agents and humans who need to work with geographic data.
 import argparse
 import http.server
 import json
+import math
 import re
-import socket
 import sys
 import webbrowser
 from typing import Optional
 
 import requests
+from geopy.extra.rate_limiter import RateLimiter
 from geopy.geocoders import Nominatim
 from geopy.distance import geodesic, great_circle
 from geopy.point import Point
@@ -308,7 +309,15 @@ class GeoClient:
 
     def __init__(self):
         self.geolocator = Nominatim(user_agent=USER_AGENT, timeout=10)
+        # Share one pacing clock between forward and reverse lookups.
+        self._lookup = RateLimiter(
+            self._nominatim_lookup, min_delay_seconds=1.1,
+            max_retries=0, swallow_exceptions=False,
+        )
         self._session = requests.Session()
+
+    def _nominatim_lookup(self, operation: str, query: str, **kwargs):
+        return getattr(self.geolocator, operation)(query, **kwargs)
 
     def _looks_like_coordinates(self, location: str) -> bool:
         """Check if a string looks like lat,lng coordinates."""
@@ -333,11 +342,11 @@ class GeoClient:
         warnings = []
 
         # Check latitude range
-        if lat < -90 or lat > 90:
+        if not math.isfinite(lat) or lat < -90 or lat > 90:
             errors.append(f"Latitude {lat} out of range [-90, 90]")
 
         # Check longitude range
-        if lng < -180 or lng > 180:
+        if not math.isfinite(lng) or lng < -180 or lng > 180:
             errors.append(f"Longitude {lng} out of range [-180, 180]")
 
         # Check for suspicious values
@@ -412,7 +421,7 @@ class GeoClient:
                 kwargs["exactly_one"] = False
                 kwargs["limit"] = limit
 
-            found = self.geolocator.geocode(address, **kwargs)
+            found = self._lookup("geocode", address, **kwargs)
             if not found:
                 return None
 
@@ -452,7 +461,7 @@ class GeoClient:
         Returns dict with address and location details.
         """
         try:
-            location = self.geolocator.reverse(f"{lat}, {lng}", addressdetails=True)
+            location = self._lookup("reverse", f"{lat}, {lng}", addressdetails=True)
             if not location:
                 return None
 
@@ -544,6 +553,10 @@ class GeoClient:
         bearing: degrees from north (0-360)
         distance_km: distance in kilometers
         """
+        if not math.isfinite(distance_km) or distance_km < 0:
+            raise GeoError("Distance must be a non-negative finite number")
+        if not math.isfinite(bearing):
+            raise GeoError("Bearing must be finite")
         start = Point(start_lat, start_lng)
         dest = geodesic(kilometers=distance_km).destination(start, bearing)
 
@@ -651,6 +664,7 @@ class GeoClient:
                 headers={"User-Agent": USER_AGENT},
                 timeout=30,
             )
+            response.raise_for_status()
             data = response.json()
         except requests.RequestException as e:
             raise GeoError(f"Routing request failed: {e}")
@@ -968,7 +982,12 @@ def _simplify_ring(points: list, tolerance: float) -> list:
             stack.append((start, index))
             stack.append((index, end))
 
-    return [pt for pt, k in zip(points, keep) if k]
+    simplified = [pt for pt, k in zip(points, keep) if k]
+    # A linear ring needs closure and at least three distinct vertices.
+    if (len(simplified) < 4 or simplified[0] != simplified[-1]
+            or len({tuple(pt) for pt in simplified[:-1]}) < 3):
+        return points
+    return simplified
 
 
 def _simplify_geometry(geometry: dict, tolerance: float) -> dict:
@@ -1054,6 +1073,88 @@ def _directions_url(waypoints: list[tuple[float, float]], mode: str = "driving")
 # Command handlers
 # ============================================================================
 
+def _read_text(path: str) -> str:
+    try:
+        with open(path, encoding="utf-8") as stream:
+            return stream.read()
+    except (OSError, UnicodeError) as e:
+        raise GeoError(f"Could not read {path}: {e}") from e
+
+
+def _validate_geometry(geometry: dict) -> None:
+    """Validate GeoJSON structure before handing it to Leaflet."""
+    if not isinstance(geometry, dict):
+        raise GeoError("GeoJSON geometry must be an object")
+    kind = geometry.get("type")
+    if kind == "GeometryCollection":
+        geometries = geometry.get("geometries")
+        if not isinstance(geometries, list):
+            raise GeoError("GeometryCollection needs a geometries array")
+        for child in geometries:
+            _validate_geometry(child)
+        return
+    depths = {
+        "Point": 0, "MultiPoint": 1, "LineString": 1,
+        "MultiLineString": 2, "Polygon": 2, "MultiPolygon": 3,
+    }
+    if not isinstance(kind, str) or kind not in depths:
+        raise GeoError(f"Unknown GeoJSON geometry type: {kind}")
+
+    def positions(value, depth):
+        if not isinstance(value, list):
+            raise GeoError("GeoJSON coordinates must be arrays")
+        if depth == 0:
+            try:
+                valid = len(value) >= 2 and all(
+                    not isinstance(n, bool) and isinstance(n, (int, float))
+                    and math.isfinite(n) for n in value
+                )
+            except OverflowError:
+                valid = False
+            if not valid:
+                raise GeoError("GeoJSON positions need at least two finite numbers")
+        else:
+            for child in value:
+                positions(child, depth - 1)
+
+    coordinates = geometry.get("coordinates")
+    positions(coordinates, depths[kind])
+
+    def line(points):
+        if len(points) < 2:
+            raise GeoError("GeoJSON LineString needs at least two positions")
+
+    def polygon(rings):
+        if not rings:
+            raise GeoError("GeoJSON Polygon needs an exterior ring")
+        for ring in rings:
+            if (len(ring) < 4 or ring[0] != ring[-1]
+                    or len({tuple(p) for p in ring[:-1]}) < 3):
+                raise GeoError("GeoJSON polygon rings need closure and three distinct vertices")
+
+    if kind == "LineString":
+        line(coordinates)
+    elif kind == "MultiLineString":
+        for points in coordinates:
+            line(points)
+    elif kind == "Polygon":
+        polygon(coordinates)
+    elif kind == "MultiPolygon":
+        for rings in coordinates:
+            polygon(rings)
+
+
+def _validate_feature(feature: dict) -> None:
+    if not isinstance(feature, dict) or feature.get("type") != "Feature":
+        raise GeoError("GeoJSON features must be Feature objects")
+    if "geometry" not in feature or "properties" not in feature:
+        raise GeoError("GeoJSON Feature needs geometry and properties members")
+    if feature["properties"] is not None and not isinstance(feature["properties"], dict):
+        raise GeoError("GeoJSON Feature properties must be an object or null")
+    if feature["geometry"] is not None:
+        _validate_geometry(feature["geometry"])
+
+
 def _load_geojson_inputs(sources: list) -> list:
     """
     Read GeoJSON from files or stdin ('-') and flatten into a list of features.
@@ -1063,10 +1164,7 @@ def _load_geojson_inputs(sources: list) -> list:
     features = []
 
     for source in sources:
-        try:
-            raw = sys.stdin.read() if source == "-" else open(source).read()
-        except OSError as e:
-            raise GeoError(f"Could not read {source}: {e}")
+        raw = sys.stdin.read() if source == "-" else _read_text(source)
 
         try:
             data = json.loads(raw)
@@ -1076,10 +1174,17 @@ def _load_geojson_inputs(sources: list) -> list:
 
         kind = data.get("type") if isinstance(data, dict) else None
         if kind == "FeatureCollection":
-            features.extend(data.get("features") or [])
+            incoming = data.get("features")
+            if not isinstance(incoming, list):
+                raise GeoError(f"{source}: FeatureCollection needs a features array")
+            for feature in incoming:
+                _validate_feature(feature)
+            features.extend(incoming)
         elif kind == "Feature":
+            _validate_feature(data)
             features.append(data)
         elif kind:
+            _validate_geometry(data)
             features.append(_geojson_feature(data))
         else:
             label = "stdin" if source == "-" else source
@@ -1141,6 +1246,12 @@ def _serve_map(page: str, data: dict, script: Optional[str], port: int, open_bro
     return 0
 
 
+def _fail(message: str) -> int:
+    """Keep diagnostics off stdout, especially for JSON/GeoJSON pipelines."""
+    print(f"Error: {message}", file=sys.stderr)
+    return 1
+
+
 def cmd_interact(client: GeoClient, args: argparse.Namespace) -> int:
     """Handle the interact command."""
     try:
@@ -1163,10 +1274,7 @@ def cmd_interact(client: GeoClient, args: argparse.Namespace) -> int:
 
         script = None
         if args.script:
-            try:
-                script = open(args.script).read()
-            except OSError as e:
-                raise GeoError(f"Could not read {args.script}: {e}")
+            script = _read_text(args.script)
 
         tiles = TILE_LAYERS[args.tiles]
         if args.zoom is not None and args.zoom > tiles["max_zoom"]:
@@ -1183,26 +1291,29 @@ def cmd_interact(client: GeoClient, args: argparse.Namespace) -> int:
         return _serve_map(page, _geojson_collection(features), script,
                           args.port, not args.no_open)
     except GeoError as e:
-        print(f"Error: {e}")
-        return 1
+        return _fail(str(e))
 
 
 def cmd_geocode(client: GeoClient, args: argparse.Namespace) -> int:
     """Handle the geocode command."""
     try:
+        if args.limit < 1:
+            raise GeoError("--limit must be at least 1")
+        if not math.isfinite(args.simplify) or args.simplify < 0:
+            raise GeoError("--simplify must be a non-negative finite tolerance")
         viewbox = None
         if args.near:
             viewbox = _viewbox_around(client, args.near, args.within, args.unit)
-
-        result = client.geocode(args.address, polygon=args.polygon, viewbox=viewbox)
+        result = client.geocode(
+            args.address, polygon=args.polygon, viewbox=viewbox,
+            limit=max(CANDIDATE_LIMIT, args.limit),
+        )
 
         if not result:
             if args.near:
-                print(f"No results for '{args.address}' within "
-                      f"{args.within} {args.unit} of {args.near}")
-            else:
-                print(f"No results found for: {args.address}")
-            return 1
+                return _fail(f"No results for '{args.address}' within "
+                             f"{args.within} {args.unit} of {args.near}")
+            return _fail(f"No results found for: {args.address}")
 
         _warn_if_ambiguous(result, args.address)
 
@@ -1255,8 +1366,7 @@ def cmd_geocode(client: GeoClient, args: argparse.Namespace) -> int:
 
         return 0
     except GeoError as e:
-        print(f"Error: {e}")
-        return 1
+        return _fail(str(e))
 
 
 def cmd_reverse(client: GeoClient, args: argparse.Namespace) -> int:
@@ -1268,14 +1378,12 @@ def cmd_reverse(client: GeoClient, args: argparse.Namespace) -> int:
         # Validate
         validation = client.validate_coordinates(lat, lng)
         if not validation["valid"]:
-            print(f"Error: Invalid coordinates - {', '.join(validation['errors'])}")
-            return 1
+            return _fail(f"Invalid coordinates - {', '.join(validation['errors'])}")
 
         result = client.reverse_geocode(lat, lng)
 
         if not result:
-            print(f"No address found for coordinates: {lat}, {lng}")
-            return 1
+            return _fail(f"No address found for coordinates: {lat}, {lng}")
 
         maps_url = _maps_url(lat, lng)
 
@@ -1315,8 +1423,7 @@ def cmd_reverse(client: GeoClient, args: argparse.Namespace) -> int:
 
         return 0
     except GeoError as e:
-        print(f"Error: {e}")
-        return 1
+        return _fail(str(e))
 
 
 def cmd_distance(client: GeoClient, args: argparse.Namespace) -> int:
@@ -1392,8 +1499,7 @@ def cmd_distance(client: GeoClient, args: argparse.Namespace) -> int:
 
         return 0
     except GeoError as e:
-        print(f"Error: {e}")
-        return 1
+        return _fail(str(e))
 
 
 def cmd_route(client: GeoClient, args: argparse.Namespace) -> int:
@@ -1503,8 +1609,7 @@ def cmd_route(client: GeoClient, args: argparse.Namespace) -> int:
 
         return 0
     except GeoError as e:
-        print(f"Error: {e}")
-        return 1
+        return _fail(str(e))
 
 
 def cmd_destination(client: GeoClient, args: argparse.Namespace) -> int:
@@ -1513,30 +1618,20 @@ def cmd_destination(client: GeoClient, args: argparse.Namespace) -> int:
         # Parse start location (smart parsing)
         start_lat, start_lng, start_addr = client.parse_location(args.start)
 
-        # Convert distance to km based on unit
-        distance = args.distance
-        unit = args.unit.lower()
-
-        if unit in ("mi", "miles"):
-            distance_km = distance * 1.60934
-        elif unit in ("km", "kilometers"):
-            distance_km = distance
-        elif unit in ("m", "meters"):
-            distance_km = distance / 1000
-        elif unit in ("ft", "feet"):
-            distance_km = distance * 0.0003048
-        elif unit in ("nm", "nautical"):
-            distance_km = distance * 1.852
-        else:
-            distance_km = distance * 1.60934  # default to miles
+        distance_km = _to_kilometers(args.distance, args.unit)
 
         result = client.calculate_destination(start_lat, start_lng, args.bearing, distance_km)
 
-        # Reverse geocode the destination
+        # Address enrichment must not discard a successful local calculation.
         dest_lat = result["destination"]["latitude"]
         dest_lng = result["destination"]["longitude"]
-        dest_info = client.reverse_geocode(dest_lat, dest_lng)
-        dest_addr = dest_info["address"] if dest_info else None
+        dest_addr = None
+        if not args.no_address:
+            try:
+                dest_info = client.reverse_geocode(dest_lat, dest_lng)
+                dest_addr = dest_info["address"] if dest_info else None
+            except GeoError as e:
+                print(f"Warning: destination address unavailable: {e}", file=sys.stderr)
 
         cardinal = _bearing_to_cardinal(args.bearing)
         dest_maps = _maps_url(dest_lat, dest_lng)
@@ -1800,6 +1895,15 @@ def _normalize_coordinate_args(argv: list, value_options: set) -> list:
     return normalized
 
 
+def _add_output_options(parser: argparse.ArgumentParser, geojson: bool = True) -> None:
+    parser.add_argument("--json", "-j", action="store_true", help="Output as JSON")
+    if geojson:
+        parser.add_argument(
+            "--geojson", "-g", action="store_true",
+            help="Output as GeoJSON (pipe into 'geo.py interact --geojson -')",
+        )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="geo.py - CLI tool for working with lat/lng and geography",
@@ -1859,16 +1963,7 @@ def main() -> int:
         metavar="DEGREES",
         help="Simplify boundary geometry by this tolerance (e.g. 0.01)"
     )
-    geocode_parser.add_argument(
-        "--json", "-j",
-        action="store_true",
-        help="Output as JSON"
-    )
-    geocode_parser.add_argument(
-        "--geojson", "-g",
-        action="store_true",
-        help="Output as GeoJSON (pipe into 'geo.py interact --geojson -')"
-    )
+    _add_output_options(geocode_parser)
 
     # reverse command
     reverse_parser = subparsers.add_parser(
@@ -1880,16 +1975,7 @@ def main() -> int:
         "coordinates",
         help="Coordinates as 'lat,lng' or 'lat lng' (e.g., '40.7128,-74.0060')"
     )
-    reverse_parser.add_argument(
-        "--json", "-j",
-        action="store_true",
-        help="Output as JSON"
-    )
-    reverse_parser.add_argument(
-        "--geojson", "-g",
-        action="store_true",
-        help="Output as GeoJSON (pipe into 'geo.py interact --geojson -')"
-    )
+    _add_output_options(reverse_parser)
 
     # distance command
     distance_parser = subparsers.add_parser(
@@ -1926,16 +2012,7 @@ def main() -> int:
         action="store_true",
         help="Show distance in all units"
     )
-    distance_parser.add_argument(
-        "--json", "-j",
-        action="store_true",
-        help="Output as JSON"
-    )
-    distance_parser.add_argument(
-        "--geojson", "-g",
-        action="store_true",
-        help="Output as GeoJSON (pipe into 'geo.py interact --geojson -')"
-    )
+    _add_output_options(distance_parser)
 
     # route command
     route_parser = subparsers.add_parser(
@@ -1977,16 +2054,7 @@ def main() -> int:
         action="store_true",
         help="Show only the summary, no turn-by-turn steps"
     )
-    route_parser.add_argument(
-        "--json", "-j",
-        action="store_true",
-        help="Output as JSON"
-    )
-    route_parser.add_argument(
-        "--geojson", "-g",
-        action="store_true",
-        help="Output as GeoJSON (pipe into 'geo.py interact --geojson -')"
-    )
+    _add_output_options(route_parser)
 
     # interact command
     interact_parser = subparsers.add_parser(
@@ -2051,6 +2119,11 @@ def main() -> int:
         type=float,
         required=True,
         help="Bearing in degrees from north (0-360)"
+    )
+    dest_parser.add_argument(
+        "--no-address",
+        action="store_true",
+        help="Skip the optional destination address lookup (offline with coordinate input)",
     )
     dest_parser.add_argument(
         "--distance", "-d",
