@@ -18,6 +18,7 @@ import http.server
 import json
 import math
 import re
+import socket
 import sys
 import webbrowser
 from typing import Optional
@@ -993,6 +994,23 @@ def _load_geojson_inputs(sources: list) -> list:
     return features
 
 
+class _MapServer(http.server.ThreadingHTTPServer):
+    """
+    Refuse ports that are already taken, so the free-port fallback runs.
+
+    HTTPServer turns on SO_REUSEADDR, which on Windows lets a second server bind a
+    port another process is serving - both listen and the older one keeps the
+    traffic. Windows gets an exclusive bind instead.
+    """
+
+    allow_reuse_address = sys.platform != "win32"
+
+    def server_bind(self):
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+
 def _serve_map(page: str, data: dict, port: int, open_browser: bool) -> int:
     """Serve the Leaflet page on localhost until interrupted."""
     routes = {
@@ -1018,12 +1036,12 @@ def _serve_map(page: str, data: dict, port: int, open_browser: bool) -> int:
             pass  # keep the terminal readable
 
     try:
-        server = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
+        server = _MapServer(("127.0.0.1", port), Handler)
     except OSError as e:
         if port == 0:
             raise GeoError(f"Could not start server: {e}")
         print(f"  Port {port} unavailable ({e.strerror}), using a free port instead")
-        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        server = _MapServer(("127.0.0.1", 0), Handler)
 
     url = f"http://127.0.0.1:{server.server_address[1]}/"
     feature_count = len(data.get("features") or [])

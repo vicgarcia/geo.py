@@ -223,6 +223,15 @@ class ClientTests(OfflineCase):
 
 
 class CommandTests(OfflineCase):
+    def test_map_server_refuses_a_port_already_serving(self):
+        taken = socket.socket()
+        taken.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        taken.bind(("127.0.0.1", 0))
+        taken.listen()
+        self.addCleanup(taken.close)
+        with self.assertRaises(OSError):
+            geo._MapServer(taken.getsockname(), geo.http.server.BaseHTTPRequestHandler)
+
     def test_legacy_code_page_streams_switch_to_utf8(self):
         streams = [io.TextIOWrapper(io.BytesIO(), encoding="cp1252") for _ in range(3)]
         with patch.object(geo.sys, "stdin", streams[0]),                 patch.object(geo.sys, "stdout", streams[1]),                 patch.object(geo.sys, "stderr", streams[2]):
