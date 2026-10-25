@@ -93,15 +93,6 @@ printed URL rather than assuming 8765. `--no-open` suppresses launching a browse
 Styling follows the simplestyle-spec (`marker-color`, `stroke`, `fill`, ...), with
 `title`/`description` becoming the popup.
 
-### destination
-Calculate endpoint from start + bearing + distance:
-```bash
-geo.py destination --start "Seattle" --bearing 180 --distance 100 --unit km
-geo.py destination --start "47.60,-122.33" --bearing 180 --distance 100 --unit km --no-address
-```
-Address enrichment is best-effort: lookup failures warn but do not lose the calculated
-coordinates. `--no-address` skips it entirely and works offline with coordinate input.
-
 ## Wrong-Match Protection
 
 Nominatim does free-form search and **will silently return a confidently wrong place**.
@@ -219,7 +210,7 @@ In JSON output:
 
 ## GeoJSON Output
 
-`geocode`, `reverse`, `distance`, `route`, and `destination` accept `--geojson` and
+`geocode`, `reverse`, `distance`, and `route` accept `--geojson` and
 write a Feature or FeatureCollection to stdout, ready to pipe into the map:
 
 ```bash

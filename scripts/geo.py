@@ -65,10 +65,6 @@ Examples:
   geo.py interact --center "Zermatt" --tiles topo --zoom 14
   geo.py interact --center "Manhattan" --tiles satellite
 
-  geo.py destination --start "40.7128,-74.0060" --bearing 270 --distance 100
-  geo.py destination --start "Seattle" --bearing 180 --distance 50 --unit km
-  geo.py destination --start "47.60,-122.33" --bearing 180 --distance 50 --unit km --no-address
-
 Smart Location Parsing:
   Most commands accept either raw coordinates or addresses:
     "40.7128,-74.0060"     Raw lat,lng (comma or space separated)
@@ -503,36 +499,6 @@ class GeoClient:
         bearing = (initial_bearing + 360) % 360
 
         return round(bearing, 2)
-
-    def calculate_destination(
-        self,
-        start_lat: float,
-        start_lng: float,
-        bearing: float,
-        distance_km: float
-    ) -> dict:
-        """
-        Calculate destination point given start, bearing, and distance.
-
-        bearing: degrees from north (0-360)
-        distance_km: distance in kilometers
-        """
-        if not math.isfinite(distance_km) or distance_km < 0:
-            raise GeoError("Distance must be a non-negative finite number")
-        if not math.isfinite(bearing):
-            raise GeoError("Bearing must be finite")
-        start = Point(start_lat, start_lng)
-        dest = geodesic(kilometers=distance_km).destination(start, bearing)
-
-        return {
-            "start": {"latitude": start_lat, "longitude": start_lng},
-            "bearing": bearing,
-            "distance_km": distance_km,
-            "destination": {
-                "latitude": round(dest.latitude, 6),
-                "longitude": round(dest.longitude, 6),
-            },
-        }
 
     def calculate_bounds(
         self, center_lat: float, center_lng: float, radius_km: float
@@ -1511,76 +1477,6 @@ def cmd_route(client: GeoClient, args: argparse.Namespace) -> int:
         return _fail(str(e))
 
 
-def cmd_destination(client: GeoClient, args: argparse.Namespace) -> int:
-    """Handle the destination command."""
-    try:
-        # Parse start location (smart parsing)
-        start_lat, start_lng, start_addr = client.parse_location(args.start)
-
-        distance_km = _to_kilometers(args.distance, args.unit)
-
-        result = client.calculate_destination(start_lat, start_lng, args.bearing, distance_km)
-
-        # Address enrichment must not discard a successful local calculation.
-        dest_lat = result["destination"]["latitude"]
-        dest_lng = result["destination"]["longitude"]
-        dest_addr = None
-        if not args.no_address:
-            try:
-                dest_info = client.reverse_geocode(dest_lat, dest_lng)
-                dest_addr = dest_info["address"] if dest_info else None
-            except GeoError as e:
-                print(f"Warning: destination address unavailable: {e}", file=sys.stderr)
-
-        cardinal = _bearing_to_cardinal(args.bearing)
-        dest_maps = _maps_url(dest_lat, dest_lng)
-
-        if args.geojson:
-            _print_geojson(_geojson_collection([
-                _geojson_point(start_lat, start_lng,
-                               {"title": "Start",
-                                "description": start_addr or f"{start_lat}, {start_lng}",
-                                "marker-color": "#31a354"}),
-                _geojson_point(dest_lat, dest_lng,
-                               {"title": "Destination",
-                                "description": dest_addr or f"{dest_lat}, {dest_lng}",
-                                "marker-color": "#e6550d"}),
-                _geojson_line([(start_lat, start_lng), (dest_lat, dest_lng)],
-                              {"title": f"{args.distance} {args.unit} at {args.bearing}° ({cardinal})",
-                               "stroke": "#3182bd", "stroke-width": 3}),
-            ]))
-        elif args.json:
-            result["distance_input"] = {"value": args.distance, "unit": args.unit}
-            result["destination"]["maps_url"] = dest_maps
-            if start_addr:
-                result["start"]["address"] = start_addr
-            if dest_addr:
-                result["destination"]["address"] = dest_addr
-            print(json.dumps(result, indent=2))
-        else:
-            start_display = start_addr or f"{start_lat}, {start_lng}"
-
-            print(f"\n  Destination Calculation")
-            print("  " + "=" * 58)
-            print(f"  Start:      {start_display}")
-            if start_addr:
-                print(f"              ({start_lat}, {start_lng})")
-            print(f"  Bearing:    {args.bearing}° ({cardinal})")
-            print(f"  Distance:   {args.distance} {args.unit}")
-            print()
-            print(f"  Destination:")
-            print(f"    Latitude:   {dest_lat}")
-            print(f"    Longitude:  {dest_lng}")
-            if dest_addr:
-                print(f"    Address:    {dest_addr}")
-            print(f"    Map:        {dest_maps}")
-            print()
-
-        return 0
-    except GeoError as e:
-        return _fail(str(e))
-
-
 # ============================================================================
 # Main CLI
 # ============================================================================
@@ -1825,42 +1721,6 @@ def main() -> int:
         help="Do not open a browser automatically"
     )
 
-    # destination command
-    dest_parser = subparsers.add_parser(
-        "destination",
-        help="Calculate destination from start, bearing, and distance",
-        description="Calculate the destination point given a start, bearing, and distance."
-    )
-    dest_parser.add_argument(
-        "--start", "-s",
-        required=True,
-        help="Starting point (coordinates or address)"
-    )
-    dest_parser.add_argument(
-        "--bearing", "-b",
-        type=float,
-        required=True,
-        help="Bearing in degrees from north (0-360)"
-    )
-    dest_parser.add_argument(
-        "--no-address",
-        action="store_true",
-        help="Skip the optional destination address lookup (offline with coordinate input)",
-    )
-    dest_parser.add_argument(
-        "--distance", "-d",
-        type=float,
-        required=True,
-        help="Distance to travel"
-    )
-    dest_parser.add_argument(
-        "--unit", "-u",
-        default="miles",
-        choices=["mi", "miles", "km", "kilometers", "m", "meters", "ft", "feet", "nm"],
-        help="Distance unit (default: miles)"
-    )
-    _add_output_options(dest_parser)
-
     # Parse args, rescuing coordinates that begin with a negative latitude
     args = parser.parse_args(
         _normalize_coordinate_args(sys.argv[1:], _value_option_strings(parser))
@@ -1880,7 +1740,6 @@ def main() -> int:
         "distance": cmd_distance,
         "route": cmd_route,
         "interact": cmd_interact,
-        "destination": cmd_destination,
     }
 
     handler = commands.get(args.command)

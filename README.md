@@ -9,8 +9,7 @@ A CLI tool for working with latitude/longitude and geography. Built for agents a
 - **Distance** - Calculate distance between two points
 - **Route** - Turn-by-turn driving, walking, and cycling directions
 - **Interact** - Serve an interactive Leaflet map on localhost
-- **GeoJSON** - Geocoding, reverse geocoding, distance and destination calculations, and routes can emit GeoJSON
-- **Destination** - Find a point given start, bearing, and distance
+- **GeoJSON** - Geocoding, reverse geocoding, distance calculations, and routes can emit GeoJSON
 - **Validate** - Check if coordinates are valid
 
 **No API key required.** Uses OpenStreetMap's Nominatim for geocoding and Valhalla (FOSSGIS) for routing.
@@ -184,34 +183,6 @@ Features are styled from their properties using the
 The server binds to `127.0.0.1` only, picks a free port if the requested one is busy,
 and runs until you press Ctrl+C.
 
-### destination
-
-Calculate where you end up starting from a point, traveling a bearing for a distance.
-The destination address is best-effort: a failed lookup warns on stderr but the
-calculated coordinates are still returned. Use `--no-address` to skip the lookup;
-with coordinate input, this command then works offline.
-
-```bash
-geo.py destination --start "Seattle" --bearing 180 --distance 100 --unit km
-geo.py destination --start "40.7128,-74.0060" --bearing 270 --distance 50 --no-address
-```
-
-Output:
-```
-  Destination Calculation
-  ==========================================================
-  Start:      Seattle, King County, Washington, United States
-              (47.6038321, -122.330062)
-  Bearing:    180.0° (S)
-  Distance:   100.0 km
-
-  Destination:
-    Latitude:   46.70434
-    Longitude:  -122.330062
-    Address:    Forest Road 7415, Lewis County, Washington, United States
-    Map:        https://www.google.com/maps?q=46.70434,-122.330062
-```
-
 ## Smart Location Parsing
 
 Most commands accept either raw coordinates or addresses:
@@ -244,7 +215,7 @@ geo.py geocode "NYC" --json | jq -r '.maps_url'
 
 ## GeoJSON Output
 
-`geocode`, `reverse`, `distance`, `route`, and `destination` accept `--geojson`,
+`geocode`, `reverse`, `distance`, and `route` accept `--geojson`,
 emitting a Feature or FeatureCollection ready to pipe into `geo.py interact --geojson -`.
 GeoJSON takes precedence when both `--json` and `--geojson` are supplied:
 
@@ -305,9 +276,6 @@ geo.py geocode "Central Park, NYC" --json | jq -r '"\(.latitude),\(.longitude)"'
 
 # Calculate driving direction
 geo.py distance --from "$START" --to "$END" --json | jq '.bearing.cardinal'
-
-# Find what's 10km north
-geo.py destination --start "$LOCATION" --bearing 0 --distance 10 --unit km --json
 ```
 
 ## Dependencies

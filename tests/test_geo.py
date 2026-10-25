@@ -1,5 +1,4 @@
 """Offline regression tests for the standalone CLI (no package install needed)."""
-import argparse
 import contextlib
 import copy
 import importlib.util
@@ -126,10 +125,7 @@ class ClientTests(OfflineCase):
             self.assertEqual(self.client.calculate_bearing(0, 0, lat, lng), bearing)
         self.assertEqual(self.client.calculate_distance(42, -71, 42, -71)["distance"]["meters"], 0)
 
-    def test_destination_and_bounds(self):
-        dest = self.client.calculate_destination(0, 0, 90, 111.319490793)["destination"]
-        self.assertAlmostEqual(dest["latitude"], 0, places=5)
-        self.assertAlmostEqual(dest["longitude"], 1, places=5)
+    def test_bounds(self):
         bounds = self.client.calculate_bounds(42, -71, 10)
         self.assertEqual(set(bounds), {"north", "south", "east", "west"})
         self.assertLess(bounds["south"], 42)
@@ -198,11 +194,6 @@ class ClientTests(OfflineCase):
         for radius in [0, -1, float("nan"), float("inf")]:
             with self.subTest(radius=radius), self.assertRaises(geo.GeoError):
                 self.client.calculate_bounds(0, 0, radius)
-        for distance in [-1, float("nan"), float("inf")]:
-            with self.subTest(distance=distance), self.assertRaises(geo.GeoError):
-                self.client.calculate_destination(0, 0, 90, distance)
-        with self.assertRaises(geo.GeoError):
-            self.client.calculate_destination(0, 0, float("nan"), 1)
 
     def test_polyline_precision_and_coordinate_order(self):
         encoded = "_p~iF~ps|U_ulLnnqC_mqNvxq`@"
@@ -231,6 +222,7 @@ class CommandTests(OfflineCase):
         self.assert_failure("bbox", "--center", "42,-71", "--radius", "1")
         self.assert_failure("ip", "8.8.8.8")
         self.assert_failure("validate", "40.7128,-74.0060")
+        self.assert_failure("destination", "--start", "0,0", "--bearing", "90", "--distance", "1")
 
     def test_map_loads_valid_data_without_network(self):
         data = {"type": "Point", "coordinates": [1, 2]}
@@ -317,37 +309,10 @@ class CommandTests(OfflineCase):
         self.assertEqual(code, 0, err)
         self.assertEqual(json.loads(out)["from"]["latitude"], -33.87)
 
-    def test_destination_defaults_to_best_effort_address(self):
-        args = argparse.Namespace(start="0,0", bearing=90, distance=1, unit="km",
-                                  json=True, geojson=False, no_address=False)
-        for lookup in [{"address": "Destination"}, None, geo.GeoError("offline")]:
-            with self.subTest(lookup=lookup), patch.object(self.client, "reverse_geocode") as reverse:
-                if isinstance(lookup, Exception):
-                    reverse.side_effect = lookup
-                else:
-                    reverse.return_value = lookup
-                out = io.StringIO()
-                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
-                    code = geo.cmd_destination(self.client, args)
-                self.assertEqual(code, 0)
-                data = json.loads(out.getvalue())
-                reverse.assert_called_once()
-                if lookup and not isinstance(lookup, Exception):
-                    self.assertEqual(data["destination"]["address"], "Destination")
-
-    def test_destination_no_address_skips_lookup(self):
-        with patch.object(self.client, "reverse_geocode") as reverse:
-            code, out, err = self.cli("destination", "--start", "0,0", "--bearing", "90",
-                                    "--distance", "1", "--no-address", "--json")
-            self.assertEqual(code, 0, err)
-            self.assertIn("destination", json.loads(out))
-            reverse.assert_not_called()
-
     def test_failures_only_write_stderr(self):
         cases = [("geocode", "Missing"), ("reverse", "91,181"), ("reverse", "42,-71"),
                  ("distance", "--from", "91,181", "--to", "0,0"),
                  ("route", "--from", "91,181", "--to", "0,0"),
-                 ("destination", "--start", "91,181", "--bearing", "90", "--distance", "1"),
                  ("reverse", "not coordinates")]
         for argv in cases:
             with self.subTest(argv=argv):
