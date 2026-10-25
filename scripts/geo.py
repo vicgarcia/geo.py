@@ -164,6 +164,8 @@ const CENTER = __CENTER__;
 const ZOOM = __ZOOM__;
 
 const map = L.map('map', { attributionControl: false });
+// Plain point markers (stops, places) sit above the turn badges in markerPane
+map.createPane('points').style.zIndex = 650;
 L.tileLayer(__TILE_URL__, {
   maxZoom: __TILE_MAX_ZOOM__
 }).addTo(map);
@@ -209,6 +211,7 @@ function markerFor(feature, latlng) {
   }
   if (!color) return L.marker(latlng);
   return L.circleMarker(latlng, {
+    pane: 'points',
     radius: sizes[p['marker-size']] || 8,
     color: '#fff', weight: 2, fillColor: color, fillOpacity: 1
   });
