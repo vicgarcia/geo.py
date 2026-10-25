@@ -624,14 +624,19 @@ class GeoClient:
         traveled = 0.0
         for leg in trip["legs"]:
             maneuvers = []
+            shape = _decode_polyline(leg["shape"]) if leg.get("shape") else []
             raw_maneuvers = leg.get("maneuvers", [])
             for index, m in enumerate(raw_maneuvers):
                 traveled += m.get("length", 0.0)
                 if not steps:
                     continue
                 following = raw_maneuvers[index + 1] if index + 1 < len(raw_maneuvers) else None
+                # Where the maneuver begins, as an index into the leg's shape
+                position = m.get("begin_shape_index")
+                location = shape[position] if position is not None and position < len(shape) else None
                 maneuvers.append({
                     "instruction": m.get("instruction", ""),
+                    "location": list(location) if location else None,
                     "street": ", ".join(m.get("street_names") or []) or None,
                     "toward": _step_toward(m, following),
                     "exit": _step_exit(m),
@@ -643,7 +648,7 @@ class GeoClient:
             legs.append({
                 "distance": _distance_units(leg["summary"]["length"]),
                 "duration_seconds": round(leg["summary"]["time"]),
-                "shape": _decode_polyline(leg["shape"]) if leg.get("shape") else [],
+                "shape": shape,
                 "steps": maneuvers,
             })
 
@@ -1432,6 +1437,11 @@ def cmd_route(client: GeoClient, args: argparse.Namespace) -> int:
 
         if args.geojson:
             features = []
+            uses = ", ".join(name for name, present in [
+                ("tolls", result["has_toll"]),
+                ("ferry", result["has_ferry"]),
+                ("highways", result["has_highway"]),
+            ] if present)
             for index, leg in enumerate(result["legs"], start=1):
                 if not leg["shape"]:
                     continue
@@ -1442,10 +1452,31 @@ def cmd_route(client: GeoClient, args: argparse.Namespace) -> int:
                         f", {_format_duration(leg['duration_seconds'])}"
                     ),
                     "mode": result["mode"],
+                    "uses": uses or None,
+                    "steps": len(leg["steps"]) or None,
                     "stroke": "#3182bd",
                     "stroke-width": 5,
                     "stroke-opacity": 0.8,
                 }))
+            # One small marker per turn; the first and last sit under the stop markers
+            for leg in result["legs"]:
+                for step in leg["steps"]:
+                    if not step["location"]:
+                        continue
+                    lat, lng = step["location"]
+                    features.append(_geojson_point(lat, lng, {
+                        "title": step["instruction"],
+                        "toward": step["toward"],
+                        "exit": step["exit"],
+                        "toll": "yes" if step["toll"] else None,
+                        "next": (
+                            f"{_format_distance(step['distance'], args.unit)}"
+                            f" ({_format_duration(step['duration_seconds'])})"
+                        ) if step["distance"]["meters"] >= 1 else None,
+                        "total after": _format_distance(step["cumulative_distance"], args.unit),
+                        "marker-color": "#3182bd",
+                        "marker-size": "small",
+                    }))
             for position, stop in enumerate(stops):
                 if position == 0:
                     title, color = "Start", "#31a354"
