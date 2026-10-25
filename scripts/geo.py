@@ -90,7 +90,6 @@ Travel Modes (route):
   driving       Car (default)
   walking       Pedestrian
   cycling       Bicycle
-  motorcycle    Motorcycle
   truck         Truck
 
 Distance Units:
@@ -279,7 +278,6 @@ class GeoClient:
         "driving": "auto",
         "walking": "pedestrian",
         "cycling": "bicycle",
-        "motorcycle": "motorcycle",
         "truck": "truck",
     }
 
@@ -928,7 +926,6 @@ def _directions_url(waypoints: list[tuple[float, float]], mode: str = "driving")
         "driving": "driving",
         "walking": "walking",
         "cycling": "bicycling",
-        "motorcycle": "driving",
         "truck": "driving",
     }
 
@@ -1720,7 +1717,7 @@ def main() -> int:
     route_parser.add_argument(
         "--mode", "-m",
         default="driving",
-        choices=["driving", "walking", "cycling", "motorcycle", "truck"],
+        choices=["driving", "walking", "cycling", "truck"],
         help="Travel mode (default: driving)"
     )
     route_parser.add_argument(

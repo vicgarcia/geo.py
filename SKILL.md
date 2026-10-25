@@ -56,7 +56,7 @@ geo.py route --from "Boston" --to "NYC" --via "Hartford, CT" --no-steps
 geo.py route --from "Seattle" --to "Bellevue, WA" --json
 ```
 
-Modes: `driving` (default), `walking`, `cycling`, `motorcycle`, `truck`.
+Modes: `driving` (default), `walking`, `cycling`, `truck`.
 
 Output includes total distance, duration, whether the route uses tolls/ferries/highways,
 a Google Maps directions link, and numbered turn-by-turn steps. Use `--no-steps` when you

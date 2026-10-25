@@ -112,7 +112,7 @@ geo.py route --from "Boston" --to "NYC" --via "Hartford, CT"
 geo.py route --from "Seattle" --to "Bellevue, WA" --no-steps
 ```
 
-Travel modes: `driving` (default), `walking`, `cycling`, `motorcycle`, `truck`.
+Travel modes: `driving` (default), `walking`, `cycling`, `truck`.
 
 Output:
 ```
