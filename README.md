@@ -172,13 +172,9 @@ Features are styled from their properties using the
 | Value | Basemap |
 |-------|---------|
 | `osm` | OpenStreetMap standard (default) |
-| `topo` | OpenTopoMap, contour lines (max zoom 17) |
-| `cyclosm` | CyclOSM, cycling infrastructure |
-| `humanitarian` | Humanitarian OSM Team style |
+| `satellite` | Esri World Imagery |
 | `light` | Esri Light Gray Canvas (max zoom 16) |
 | `dark` | Esri Dark Gray Canvas (max zoom 16) |
-| `satellite` | Esri World Imagery |
-| `terrain` | Esri World Topo |
 
 The server binds to `127.0.0.1` only, picks a free port if the requested one is busy,
 and runs until you press Ctrl+C.
@@ -243,7 +239,7 @@ geo.py geocode "NYC" --json | jq '.latitude, .longitude'
 |---------|---------|-------------|
 | Geocoding | [Nominatim](https://nominatim.org/) (OpenStreetMap) | 1 req/sec |
 | Routing | [Valhalla](https://valhalla1.openstreetmap.de/) (FOSSGIS public instance) | fair use; 1500 km max route |
-| Map tiles | OpenStreetMap, OpenTopoMap, CyclOSM, HOT, Esri | fair use; keep attribution |
+| Map tiles | OpenStreetMap, Esri | fair use; keep attribution |
 
 No API keys required. Forward and reverse Nominatim lookups share automatic
 1.1-second pacing within each process. When launching separate processes in a loop,

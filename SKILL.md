@@ -75,8 +75,7 @@ geo.py route --from "Seattle" --to "Portland, OR" --geojson | geo.py interact --
 geo.py interact --center "Zermatt" --tiles satellite
 ```
 
-Tiles: `osm` (default), `topo`, `cyclosm`, `humanitarian`, `light`, `dark`,
-`satellite`, `terrain`. All keyless.
+Tiles: `osm` (default), `satellite`, `light`, `dark`. All keyless.
 
 **This command blocks until interrupted.** Run it in the background, or the session
 hangs. It prints the URL it bound to - report that URL to the user:

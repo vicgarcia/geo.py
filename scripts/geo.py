@@ -65,7 +65,7 @@ Examples:
   geo.py interact --center "Seattle" --zoom 12
   geo.py interact --marker "Space Needle:Start here" --marker "Pike Place Market"
   geo.py route --from "Seattle" --to "Portland, OR" --geojson | geo.py interact --geojson -
-  geo.py interact --center "Zermatt" --tiles topo --zoom 14
+  geo.py interact --center "Zermatt" --tiles satellite --zoom 14
   geo.py interact --center "Manhattan" --tiles satellite
 
 Smart Location Parsing:
@@ -77,13 +77,9 @@ Smart Location Parsing:
 
 Basemap Tiles (interact):
   osm           OpenStreetMap standard (default)
-  topo          OpenTopoMap, contour lines
-  cyclosm       CyclOSM, cycling infrastructure
-  humanitarian  Humanitarian OSM Team style
+  satellite     Esri World Imagery
   light         Esri Light Gray Canvas
   dark          Esri Dark Gray Canvas
-  satellite     Esri World Imagery
-  terrain       Esri World Topo
 
 Travel Modes (route):
   driving       Car (default)
@@ -109,20 +105,10 @@ TILE_LAYERS = {
         "attribution": '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
         "max_zoom": 19,
     },
-    "topo": {
-        "url": "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png",
-        "attribution": '&copy; OpenStreetMap contributors | &copy; <a href="https://opentopomap.org">OpenTopoMap</a> (CC-BY-SA)',
-        "max_zoom": 17,
-    },
-    "cyclosm": {
-        "url": "https://{s}.tile-cyclosm.openstreetmap.fr/cyclosm/{z}/{x}/{y}.png",
-        "attribution": '&copy; OpenStreetMap contributors | tiles <a href="https://www.cyclosm.org/">CyclOSM</a>',
-        "max_zoom": 20,
-    },
-    "humanitarian": {
-        "url": "https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png",
-        "attribution": '&copy; OpenStreetMap contributors | tiles <a href="https://www.hotosm.org/">HOT</a>',
-        "max_zoom": 20,
+    "satellite": {
+        "url": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        "attribution": 'Tiles &copy; <a href="https://www.esri.com/">Esri</a>, Maxar, Earthstar Geographics',
+        "max_zoom": 19,
     },
     "light": {
         "url": "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}",
@@ -133,16 +119,6 @@ TILE_LAYERS = {
         "url": "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}",
         "attribution": 'Tiles &copy; <a href="https://www.esri.com/">Esri</a> | &copy; OpenStreetMap contributors',
         "max_zoom": 16,
-    },
-    "satellite": {
-        "url": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-        "attribution": 'Tiles &copy; <a href="https://www.esri.com/">Esri</a>, Maxar, Earthstar Geographics',
-        "max_zoom": 19,
-    },
-    "terrain": {
-        "url": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}",
-        "attribution": 'Tiles &copy; <a href="https://www.esri.com/">Esri</a>',
-        "max_zoom": 19,
     },
 }
 
@@ -1687,7 +1663,7 @@ def main() -> int:
     interact_parser.add_argument(
         "--tiles", "-t",
         default="osm",
-        choices=sorted(TILE_LAYERS),
+        choices=list(TILE_LAYERS),
         help="Basemap tiles (default: osm)"
     )
     interact_parser.add_argument(
