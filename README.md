@@ -10,7 +10,6 @@ A CLI tool for working with latitude/longitude and geography. Built for agents a
 - **Route** - Turn-by-turn driving, walking, and cycling directions
 - **Interact** - Serve an interactive Leaflet map on localhost
 - **GeoJSON** - Geocoding, reverse geocoding, distance calculations, and routes can emit GeoJSON
-- **Validate** - Check if coordinates are valid
 
 **No API key required.** Uses OpenStreetMap's Nominatim for geocoding and Valhalla (FOSSGIS) for routing.
 
@@ -164,8 +163,11 @@ geo.py route --from "Seattle" --to "Portland, OR" --geojson | geo.py interact --
 
 Features are styled from their properties using the
 [simplestyle-spec](https://github.com/mapbox/simplestyle-spec): `marker-color`,
-`marker-size`, `stroke`, `stroke-width`, `stroke-opacity`, `fill`, `fill-opacity`.
-`title` and `description` become the popup; any other property is listed beneath it.
+`marker-size`, `marker-symbol`, `stroke`, `stroke-width`, `stroke-opacity`, `fill`,
+`fill-opacity`. A point with both `marker-color` and `marker-symbol` renders as a round
+badge showing the symbol - `route --geojson` uses this for an arrow at every turn (amber
+on toll steps). `title` and `description` head the popup card; any other property is
+listed beneath them as label/value rows.
 
 **Basemap tiles** (`--tiles`), all keyless:
 

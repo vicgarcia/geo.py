@@ -62,9 +62,10 @@ Output includes total distance, duration, whether the route uses tolls/ferries/h
 a Google Maps directions link, and numbered turn-by-turn steps. Use `--no-steps` when you
 only need the summary.
 
-Each step includes `instruction`, `street`, `toward` (the street it puts you on when the
-instruction text doesn't name it), `exit`, `toll`, `distance`, `cumulative_distance`, and
-`duration_seconds`.
+Each step includes `instruction`, `type` (Valhalla's maneuver type), `location`
+(`[lat, lng]` where the maneuver begins), `street`, `toward` (the street it puts you on
+when the instruction text doesn't name it), `exit`, `toll`, `distance`,
+`cumulative_distance`, and `duration_seconds`.
 
 ### interact
 Serve an interactive Leaflet map on localhost (blocks until Ctrl+C):
@@ -89,8 +90,9 @@ Defaults to port 8765 and **falls back to a free port if that is taken**, so rea
 printed URL rather than assuming 8765. `--no-open` suppresses launching a browser.
 `--marker` splits on the *first* colon: `"LOCATION:Popup text"`.
 
-Styling follows the simplestyle-spec (`marker-color`, `stroke`, `fill`, ...), with
-`title`/`description` becoming the popup.
+Styling follows the simplestyle-spec (`marker-color`, `marker-symbol`, `stroke`, `fill`,
+...), with `title`/`description` heading the popup. A point with `marker-symbol` renders as
+a round badge; `route --geojson` uses this for a turn arrow at every maneuver.
 
 ## Wrong-Match Protection
 

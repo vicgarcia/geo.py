@@ -1366,7 +1366,7 @@ def cmd_distance(client: GeoClient, args: argparse.Namespace) -> int:
             from_display = from_addr or f"{from_lat}, {from_lng}"
             to_display = to_addr or f"{to_lat}, {to_lng}"
 
-            print(f"\n  Distance Calculation")
+            print("\n  Distance Calculation")
             print("  " + "=" * 58)
             print(f"  From:       {from_display}")
             if from_addr:
