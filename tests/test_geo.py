@@ -174,9 +174,11 @@ class ClientTests(OfflineCase):
                     "shape": "encoded",
                     "maneuvers": [
                         {"instruction": "Head east", "length": 1, "time": 60,
-                         "begin_shape_index": 0},
-                        {"instruction": "Take exit 2D", "length": 1, "time": 60,
-                         "begin_shape_index": 1, "toll": True,
+                         "begin_shape_index": 0, "type": 1},
+                        {"instruction": "Turn left", "length": 0.5, "time": 30,
+                         "begin_shape_index": 0, "type": 15},
+                        {"instruction": "Take exit 2D", "length": 0.5, "time": 30,
+                         "begin_shape_index": 1, "toll": True, "type": 20,
                          "sign": {"exit_number_elements": [{"text": "2D"}]}},
                         {"instruction": "Arrive", "length": 0, "time": 0,
                          "begin_shape_index": 9},
@@ -189,11 +191,14 @@ class ClientTests(OfflineCase):
         self.assertEqual(code, 0, err)
         features = json.loads(out)["features"]
         self.assertEqual(features[0]["properties"]["uses"], "highways")
-        turns = [f for f in features if f["properties"].get("marker-size") == "small"]
-        # The out-of-range shape index is skipped rather than guessed
+        turns = [f for f in features if "marker-symbol" in f["properties"]]
+        # The start maneuver and the out-of-range shape index are both skipped
         self.assertEqual([f["geometry"]["coordinates"] for f in turns], [[0, 0], [0.5, 0]])
+        self.assertEqual([f["properties"]["marker-symbol"] for f in turns], ["\u2190", "\u2197"])
         self.assertEqual(turns[1]["properties"]["title"], "Take exit 2D")
         self.assertEqual(turns[1]["properties"]["toll"], "yes")
+        self.assertNotEqual(turns[0]["properties"]["marker-color"],
+                            turns[1]["properties"]["marker-color"])
 
     def test_invalid_calculation_numbers(self):
         for radius in [0, -1, float("nan"), float("inf")]:

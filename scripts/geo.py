@@ -130,9 +130,27 @@ MAP_PAGE = """\
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>
   html, body, #map { height: 100%; margin: 0; }
-  .leaflet-popup-content { font: 13px/1.45 system-ui, sans-serif; }
-  .leaflet-popup-content dt { font-weight: 600; margin-top: 4px; }
-  .leaflet-popup-content dd { margin: 0; }
+  .leaflet-popup-content-wrapper { border-radius: 10px; box-shadow: 0 6px 24px rgba(0, 0, 0, .18); }
+  .leaflet-popup-content {
+    margin: 12px 14px; min-width: 180px; color: #1f2933;
+    font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  .geo-title { font-weight: 600; font-size: 14px; line-height: 1.35; }
+  .geo-desc { color: #52606d; margin-top: 2px; }
+  .geo-props {
+    display: grid; grid-template-columns: auto 1fr; gap: 3px 12px;
+    margin: 8px 0 0; padding-top: 8px; border-top: 1px solid #e4e7eb;
+  }
+  .geo-props dt {
+    color: #7b8794; font-size: 11px; text-transform: uppercase;
+    letter-spacing: .04em; align-self: center;
+  }
+  .geo-props dd { margin: 0; font-variant-numeric: tabular-nums; }
+  .geo-badge {
+    display: flex; align-items: center; justify-content: center; box-sizing: border-box;
+    border: 2px solid #fff; border-radius: 50%; box-shadow: 0 1px 4px rgba(0, 0, 0, .35);
+    color: #fff; font: 700 12px/1 system-ui, "Segoe UI Symbol", sans-serif;
+  }
 </style>
 </head>
 <body>
@@ -176,6 +194,15 @@ function markerFor(feature, latlng) {
   const p = feature.properties || {};
   const color = p['marker-color'];
   const sizes = { small: 6, medium: 8, large: 11 };
+  if (color && p['marker-symbol']) {
+    const px = { small: 18, medium: 22, large: 28 }[p['marker-size']] || 22;
+    return L.marker(latlng, { icon: L.divIcon({
+      className: '',
+      html: '<div class="geo-badge" style="width:' + px + 'px;height:' + px +
+            'px;background:' + esc(color) + '">' + esc(p['marker-symbol']) + '</div>',
+      iconSize: [px, px]
+    }) });
+  }
   if (!color) return L.marker(latlng);
   return L.circleMarker(latlng, {
     radius: sizes[p['marker-size']] || 8,
@@ -188,16 +215,16 @@ const STYLE_KEYS = /^(stroke|fill|marker-)/;
 function popupFor(feature, layer) {
   const p = feature.properties || {};
   const parts = [];
-  if (p.title) parts.push('<strong>' + esc(p.title) + '</strong>');
-  if (p.description) parts.push(esc(p.description));
+  if (p.title) parts.push('<div class="geo-title">' + esc(p.title) + '</div>');
+  if (p.description) parts.push('<div class="geo-desc">' + esc(p.description) + '</div>');
 
   const extra = Object.keys(p)
     .filter(k => k !== 'title' && k !== 'description' && !STYLE_KEYS.test(k));
   if (extra.length) {
-    parts.push('<dl>' + extra
+    parts.push('<dl class="geo-props">' + extra
       .map(k => '<dt>' + esc(k) + '</dt><dd>' + esc(p[k]) + '</dd>').join('') + '</dl>');
   }
-  if (parts.length) layer.bindPopup(parts.join('<br>'));
+  if (parts.length) layer.bindPopup(parts.join(''), { maxWidth: 320 });
 }
 
 function frame() {
@@ -523,6 +550,7 @@ class GeoClient:
                 location = shape[position] if position is not None and position < len(shape) else None
                 maneuvers.append({
                     "instruction": m.get("instruction", ""),
+                    "type": m.get("type"),
                     "location": list(location) if location else None,
                     "street": ", ".join(m.get("street_names") or []) or None,
                     "toward": _step_toward(m, following),
@@ -627,6 +655,23 @@ def _step_toward(maneuver: dict, following: Optional[dict]) -> Optional[str]:
         if not _mentions_street(instruction, street):
             return street
     return None
+
+
+# Valhalla maneuver type -> arrow for the map badge. Start and arrival types
+# (1-6) get no badge: the stop markers already sit on those points.
+TURN_SYMBOLS = {
+    **dict.fromkeys([7, 8, 17, 22, 25], "↑"),      # continue / straight
+    **dict.fromkeys([9, 18, 20, 23, 37], "↗"),     # slight right, ramp/exit/keep right
+    **dict.fromkeys([10], "→"),                    # right
+    **dict.fromkeys([11], "↘"),                    # sharp right
+    **dict.fromkeys([12, 13], "↶"),                # u-turn
+    **dict.fromkeys([14], "↙"),                    # sharp left
+    **dict.fromkeys([15], "←"),                    # left
+    **dict.fromkeys([16, 19, 21, 24, 38], "↖"),    # slight left, ramp/exit/keep left
+    **dict.fromkeys([26, 27], "⟳"),                # roundabout
+    **dict.fromkeys([28, 29], "≈"),                # ferry
+}
+STOP_MANEUVERS = {1, 2, 3, 4, 5, 6}
 
 
 def _step_exit(maneuver: dict) -> Optional[str]:
@@ -1342,10 +1387,10 @@ def cmd_route(client: GeoClient, args: argparse.Namespace) -> int:
                     "stroke-width": 5,
                     "stroke-opacity": 0.8,
                 }))
-            # One small marker per turn; the first and last sit under the stop markers
+            # One arrow badge per turn; tolls in amber
             for leg in result["legs"]:
                 for step in leg["steps"]:
-                    if not step["location"]:
+                    if not step["location"] or step["type"] in STOP_MANEUVERS:
                         continue
                     lat, lng = step["location"]
                     features.append(_geojson_point(lat, lng, {
@@ -1358,7 +1403,8 @@ def cmd_route(client: GeoClient, args: argparse.Namespace) -> int:
                             f" ({_format_duration(step['duration_seconds'])})"
                         ) if step["distance"]["meters"] >= 1 else None,
                         "total after": _format_distance(step["cumulative_distance"], args.unit),
-                        "marker-color": "#3182bd",
+                        "marker-color": "#d97706" if step["toll"] else "#2563eb",
+                        "marker-symbol": TURN_SYMBOLS.get(step["type"], "\u2022"),
                         "marker-size": "small",
                     }))
             for position, stop in enumerate(stops):
