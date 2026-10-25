@@ -9,13 +9,11 @@ A CLI tool for working with latitude/longitude and geography. Built for agents a
 - **Distance** - Calculate distance between two points
 - **Route** - Turn-by-turn driving, walking, and cycling directions
 - **Interact** - Serve an interactive Leaflet map on localhost
-- **GeoJSON** - Every command can emit GeoJSON to pipe into the map
+- **GeoJSON** - Geocoding, reverse geocoding, distance and destination calculations, and routes can emit GeoJSON
 - **Destination** - Find a point given start, bearing, and distance
 - **Validate** - Check if coordinates are valid
-- **IP Geolocation** - Get location from an IP address
-- **Bounding Box** - Calculate bbox from center + radius (GeoJSON output)
 
-**No API key required.** Uses OpenStreetMap's Nominatim for geocoding, Valhalla (FOSSGIS) for routing, and ip-api.com for IP geolocation.
+**No API key required.** Uses OpenStreetMap's Nominatim for geocoding and Valhalla (FOSSGIS) for routing.
 
 ## Installation
 
@@ -57,7 +55,7 @@ Output:
   Latitude:   38.8976387
   Longitude:  -77.0365528
   Address:    White House, 1600, Pennsylvania Avenue Northwest...
-  Map:        maps://?ll=38.8976387,-77.0365528&z=18
+  Map:        https://www.google.com/maps?q=38.8976387,-77.0365528
 ```
 
 **Avoiding wrong matches.** Free-form geocoding can return a confidently wrong place -
@@ -163,7 +161,6 @@ Anything that emits GeoJSON pipes straight in:
 
 ```bash
 geo.py route --from "Seattle" --to "Portland, OR" --geojson | geo.py interact --geojson -
-geo.py bbox --center "NYC" --radius 5 --geojson | geo.py interact --geojson -
 ```
 
 Features are styled from their properties using the
@@ -202,10 +199,13 @@ and runs until you press Ctrl+C.
 ### destination
 
 Calculate where you end up starting from a point, traveling a bearing for a distance.
+The destination address is best-effort: a failed lookup warns on stderr but the
+calculated coordinates are still returned. Use `--no-address` to skip the lookup;
+with coordinate input, this command then works offline.
 
 ```bash
 geo.py destination --start "Seattle" --bearing 180 --distance 100 --unit km
-geo.py destination --start "40.7128,-74.0060" --bearing 270 --distance 50
+geo.py destination --start "40.7128,-74.0060" --bearing 270 --distance 50 --no-address
 ```
 
 Output:
@@ -221,90 +221,7 @@ Output:
     Latitude:   46.70434
     Longitude:  -122.330062
     Address:    Forest Road 7415, Lewis County, Washington, United States
-    Map:        maps://?ll=46.70434,-122.330062&z=18
-```
-
-### validate
-
-Check if coordinates are valid.
-
-```bash
-geo.py validate "40.7128,-74.0060"   # Valid
-geo.py validate "91.0,181.0"          # Invalid - out of range
-geo.py validate "0,0"                 # Valid but warns about Null Island
-```
-
-Returns exit code 0 for valid, 1 for invalid.
-
-### ip
-
-Get location from an IP address. Uses your current IP if none specified.
-
-```bash
-geo.py ip                # Your IP
-geo.py ip 8.8.8.8        # Google DNS
-geo.py ip --json
-```
-
-Output:
-```
-  IP Geolocation: 8.8.8.8
-  ==========================================================
-  Latitude:   39.03
-  Longitude:  -77.5
-  Map:        maps://?ll=39.03,-77.5&z=18
-
-  City:       Ashburn
-  Region:     Virginia
-  Country:    United States (US)
-  Timezone:   America/New_York
-
-  ISP:        Google LLC
-  Org:        Google Public DNS
-```
-
-### bbox
-
-Calculate a bounding box from a center point and radius. Returns GeoJSON.
-
-```bash
-geo.py bbox --center "NYC" --radius 5 --unit km
-geo.py bbox --center "40.7128,-74.006" --radius 1 --unit miles --json
-geo.py bbox --center "Seattle" --radius 10 --unit km --json --geojson
-```
-
-Output:
-```
-  Bounding Box
-  ==========================================================
-  Center:     New York, United States
-              (40.7127281, -74.0060152)
-  Radius:     5.0 km
-  Map:        maps://?ll=40.7127281,-74.0060152&z=18
-
-  Bounds:
-    North:    40.757753
-    South:    40.667702
-    East:     -73.946843
-    West:     -74.065187
-
-  bbox:       -74.065187,40.667702,-73.946843,40.757753
-```
-
-With `--json --geojson`, returns pure GeoJSON:
-```json
-{
-  "type": "Feature",
-  "bbox": [-74.025046, 40.698308, -73.986954, 40.727292],
-  "geometry": {
-    "type": "Polygon",
-    "coordinates": [[[-74.025, 40.698], [-73.986, 40.698], ...]]
-  },
-  "properties": {
-    "center": {"latitude": 40.7128, "longitude": -74.006},
-    "radius_km": 1.60934
-  }
-}
+    Map:        https://www.google.com/maps?q=46.70434,-122.330062
 ```
 
 ## Smart Location Parsing
@@ -330,23 +247,23 @@ Most commands accept either raw coordinates or addresses:
 
 ## Maps Links
 
-All commands that return coordinates include a `maps_url` - a deep link that opens the location in a maps application. The `maps://` scheme works across platforms.
+JSON location results include Google Maps URLs (`maps_url`); routes include a `directions_url`. GeoJSON output focuses on geometry and feature properties instead.
 
 ```bash
 geo.py geocode "NYC" --json | jq -r '.maps_url'
-# maps://?ll=40.7127281,-74.0060152&z=18
+# https://www.google.com/maps?q=40.7127281,-74.0060152
 ```
 
 ## GeoJSON Output
 
-Every command that produces a location accepts `--geojson`, emitting a Feature or
-FeatureCollection on stdout, ready to pipe into `geo.py interact --geojson -`:
+`geocode`, `reverse`, `distance`, `route`, and `destination` accept `--geojson`,
+emitting a Feature or FeatureCollection ready to pipe into `geo.py interact --geojson -`.
+GeoJSON takes precedence when both `--json` and `--geojson` are supplied:
 
 ```bash
 geo.py geocode "Tokyo" --geojson
 geo.py route --from A --to B --geojson
 geo.py distance --from A --to B --geojson    # both points plus the line between
-geo.py bbox --center "NYC" --radius 5 --geojson
 ```
 
 Note that `route --geojson` includes the real road geometry, decoded from Valhalla's
@@ -354,7 +271,8 @@ polyline, not just the endpoints.
 
 ## JSON Output
 
-All commands support `--json` / `-j` for machine-readable output:
+All commands except `interact` support `--json` / `-j` for machine-readable output.
+`interact --geojson` reads map data; it is not an output option:
 
 ```bash
 geo.py geocode "NYC" --json | jq '.latitude, .longitude'
@@ -367,18 +285,35 @@ geo.py geocode "NYC" --json | jq '.latitude, .longitude'
 | Geocoding | [Nominatim](https://nominatim.org/) (OpenStreetMap) | 1 req/sec |
 | Routing | [Valhalla](https://valhalla1.openstreetmap.de/) (FOSSGIS public instance) | fair use; 1500 km max route |
 | Map tiles | OpenStreetMap, OpenTopoMap, CyclOSM, HOT, Esri | fair use; keep attribution |
-| IP Geolocation | [ip-api.com](http://ip-api.com/) | 45 req/min |
 
-No API keys required. Please respect rate limits.
+No API keys required. Forward and reverse Nominatim lookups share automatic
+1.1-second pacing within each process. When launching separate processes in a loop,
+still wait at least 1.1 seconds between calls; concurrent processes do not share a limiter.
+
+## Errors and Validation
+
+Errors and warnings go to stderr; stdout is reserved for results. Failures exit 1
+(argument syntax errors exit 2). Out-of-range coordinates are rejected with exit 1.
+Map inputs are checked for valid GeoJSON
+structure, finite coordinates, and closed polygon rings before the server starts.
+Simplification preserves a ring unchanged if simplifying would collapse it below
+three distinct vertices; it does not guarantee topology preservation.
+
+## Development
+
+Run the offline regression suite (service calls are mocked):
+
+```bash
+uv run --with 'geopy>=2.4.0' --with 'requests>=2.31.0' python -m unittest discover -s tests -v
+```
+
+CI runs this suite before creating a release.
 
 ## Examples for Agents
 
 ```bash
 # Get coordinates for an address
 geo.py geocode "Central Park, NYC" --json | jq -r '"\(.latitude),\(.longitude)"'
-
-# Check if user input is valid coordinates
-geo.py validate "$USER_INPUT" && echo "Valid" || echo "Invalid"
 
 # Calculate driving direction
 geo.py distance --from "$START" --to "$END" --json | jq '.bearing.cardinal'
@@ -390,7 +325,7 @@ geo.py destination --start "$LOCATION" --bearing 0 --distance 10 --unit km --jso
 ## Dependencies
 
 - `geopy>=2.4.0` - Geocoding and distance calculations
-- `requests>=2.31.0` - HTTP client for IP geolocation
+- `requests>=2.31.0` - HTTP client for routing
 
 Managed automatically by `uv` via PEP 723 inline script metadata.
 

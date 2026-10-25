@@ -1,7 +1,7 @@
 ---
 name: geo
-description: CLI tool for geography and maps - geocoding, reverse geocoding, distance and bearing, turn-by-turn directions, boundary polygons, IP geolocation, GeoJSON output, and an interactive Leaflet map served on localhost
-compatibility: Requires 'geo.py' script in PATH. No API keys needed. Uses Nominatim (OpenStreetMap), Valhalla (FOSSGIS), OSM/Esri tiles, and ip-api.com.
+description: CLI tool for geography and maps - geocoding, reverse geocoding, distance and bearing, turn-by-turn directions, boundary polygons, GeoJSON output, and an interactive Leaflet map served on localhost
+compatibility: Requires 'geo.py' script in PATH. No API keys needed. Uses Nominatim (OpenStreetMap), Valhalla (FOSSGIS), and OSM/Esri tiles.
 ---
 
 # geo.py
@@ -31,7 +31,8 @@ geo.py geocode "Mount Rainier" --geojson --polygon | jq -r '.geometry.type'   # 
 
 Boundaries can be large - Switzerland is 1.3 MB raw - so pair it with
 `--simplify DEGREES` (Douglas-Peucker; `0.01` is roughly 1 km and typically cuts size by
-10-50x while keeping computed areas within ~0.3% of official figures).
+10-50x). Collapsed rings retain their original vertices; simplification does not
+guarantee topology preservation or a particular area accuracy.
 
 ### reverse
 Convert coordinates to address:
@@ -97,34 +98,17 @@ Styling follows the simplestyle-spec (`marker-color`, `stroke`, `fill`, ...), wi
 Calculate endpoint from start + bearing + distance:
 ```bash
 geo.py destination --start "Seattle" --bearing 180 --distance 100 --unit km
+geo.py destination --start "47.60,-122.33" --bearing 180 --distance 100 --unit km --no-address
 ```
-
-### validate
-Check if coordinates are valid:
-```bash
-geo.py validate "40.7128,-74.0060"
-```
-
-### ip
-Get location from IP address:
-```bash
-geo.py ip              # Your IP
-geo.py ip 8.8.8.8      # Specific IP
-```
-
-### bbox
-Calculate bounding box from center + radius (returns GeoJSON):
-```bash
-geo.py bbox --center "NYC" --radius 5 --unit km
-geo.py bbox --center "40.7128,-74.006" --radius 1 --unit miles --json --geojson
-```
+Address enrichment is best-effort: lookup failures warn but do not lose the calculated
+coordinates. `--no-address` skips it entirely and works offline with coordinate input.
 
 ## Wrong-Match Protection
 
 Nominatim does free-form search and **will silently return a confidently wrong place**.
 `"Washington, USA"` resolves to Washington **D.C.**, not the state. `"134 Angell St,
 Providence, RI"` resolves to a same-named street in Woonsocket, 15 miles away. Nothing
-errors - you just get the wrong coordinates. Three tools address this.
+errors - you just get the wrong coordinates. Four guardrails address this.
 
 **1. Ambiguity warnings are automatic.** When the runner-up scores within 15% of the
 winner, a warning goes to **stderr** (stdout stays clean, so pipes are unaffected):
@@ -177,14 +161,14 @@ Use the tools above, and echo the resolved address back to the user.
 
 ## Rate Limits and Batching
 
-These are free, shared services. When geocoding more than a handful of places, **sleep
-~1.1s between calls** or Nominatim will start refusing them.
+These are free, shared services. Forward and reverse Nominatim lookups share automatic
+1.1-second pacing within a process. When launching separate CLI processes in a loop,
+**sleep at least 1.1s between calls**; concurrent processes do not share a limiter.
 
 | Service | Used by | Limit |
 |---------|---------|-------|
 | Nominatim | geocode, reverse, any address input | 1 request/second |
 | Valhalla (FOSSGIS) | route | fair use; 1500 km max route |
-| ip-api.com | ip | 45 requests/minute |
 | OSM/Esri tiles | interact | fair use; keep attribution |
 
 Passing **coordinates instead of addresses skips geocoding entirely** - it is faster and
@@ -197,9 +181,10 @@ geo.py distance --from "$hub" --to "47.61,-122.20" --json   # no network geocodi
 
 ## Errors
 
-Failures print `Error: <message>` and exit **1**; success exits **0**. A geocode with no
-match prints `No results found for: ...` and also exits 1. Check the exit status rather
-than parsing prose.
+Failures print `Error: <message>` to **stderr** and exit **1**; success exits **0**.
+Argument syntax errors exit **2**. A geocode with no match also exits 1. Stdout stays
+reserved for results. Out-of-range coordinates are rejected with exit 1. Check the
+exit status rather than parsing prose.
 
 ## Smart Location Parsing
 
@@ -212,7 +197,7 @@ Southern-hemisphere coordinates that begin with a minus sign work normally
 
 ## Maps Links
 
-All commands that return coordinates include a `maps_url` field - a Google Maps link to view the location. **Always provide this URL to the user as a clickable markdown link** so they can visualize the location.
+JSON location results include a `maps_url` field; routes include `directions_url`. GeoJSON output focuses on geometry rather than Maps URLs. **Always provide this URL to the user as a clickable markdown link** so they can visualize the location.
 
 Example output:
 ```
@@ -235,27 +220,27 @@ In JSON output:
 
 ## GeoJSON Output
 
-Every location-producing command accepts `--geojson` and writes a Feature or
-FeatureCollection to stdout, ready to pipe into the map:
+`geocode`, `reverse`, `distance`, `route`, and `destination` accept `--geojson` and
+write a Feature or FeatureCollection to stdout, ready to pipe into the map:
 
 ```bash
 geo.py geocode "Tokyo" --geojson
 geo.py route --from A --to B --geojson | geo.py interact --geojson -
 geo.py distance --from A --to B --geojson      # both points plus the line between
-geo.py bbox --center "NYC" --radius 5 --geojson
 ```
 
 `route --geojson` carries the real road geometry decoded from Valhalla's polyline, not
 just endpoints. `--geojson` takes precedence over `--json` when both are passed.
 
 `interact --geojson` accepts a FeatureCollection, a bare Feature, a raw geometry, or `-`
-for stdin, and is repeatable. It rebuilds the collection from `features`, so **foreign
+for stdin, and is repeatable. Invalid feature/geometry structure, non-finite coordinates,
+and unclosed/degenerate rings are rejected before serving. It rebuilds the collection from `features`, so **foreign
 top-level members are dropped** - put configuration in a `--script` file, not alongside
 `features`.
 
 ## JSON Output
 
-All commands support `--json` for machine-readable output:
+All commands except `interact` support `--json` for machine-readable output:
 ```bash
 geo.py geocode "NYC" --json | jq '.latitude'
 ```
@@ -264,32 +249,27 @@ geo.py geocode "NYC" --json | jq '.latitude'
 
 1. **Always share the maps URL** with users when displaying location results - it lets them see the location visually.
 
-2. **Validate user input** before using coordinates:
-   ```bash
-   geo.py validate "$coords" && echo "Valid"
-   ```
-
-3. **Extract just coordinates** from geocode:
+2. **Extract just coordinates** from geocode:
    ```bash
    geo.py geocode "Address" --json | jq -r '"\(.latitude),\(.longitude)"'
    ```
 
-4. **Route summary without the step list** (much less output):
+3. **Route summary without the step list** (much less output):
    ```bash
    geo.py route --from A --to B --no-steps --json | jq '{miles: .distance.miles, mins: (.duration_seconds/60)}'
    ```
 
-5. **Share the directions URL** from `route` as a clickable markdown link, same as `maps_url`.
+4. **Share the directions URL** from `route` as a clickable markdown link, same as `maps_url`.
 
-6. **Get bearing as cardinal direction**:
+5. **Get bearing as cardinal direction**:
    ```bash
    geo.py distance --from A --to B --json | jq '.bearing.cardinal'
    ```
 
-7. **Chain with other tools**:
+6. **Chain with other tools**:
    ```bash
-   # Get weather for an IP's location
-   coords=$(geo.py ip 8.8.8.8 --json | jq -r '"\(.latitude),\(.longitude)"')
+   # Get weather for a place
+   coords=$(geo.py geocode "Seattle, WA" --json | jq -r '"\(.latitude),\(.longitude)"')
    weather.py current --location "$coords"
    ```
 
