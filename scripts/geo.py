@@ -68,15 +68,7 @@ Examples:
 
   geo.py destination --start "40.7128,-74.0060" --bearing 270 --distance 100
   geo.py destination --start "Seattle" --bearing 180 --distance 50 --unit km
-
-  geo.py validate "40.7128,-74.0060"
-  geo.py validate "91.0,181.0"
-
-  geo.py ip
-  geo.py ip 8.8.8.8
-
-  geo.py bbox --center "NYC" --radius 5 --unit km
-  geo.py bbox --center "40.7128,-74.006" --radius 1 --unit miles --json --geojson
+  geo.py destination --start "47.60,-122.33" --bearing 180 --distance 50 --unit km --no-address
 
 Smart Location Parsing:
   Most commands accept either raw coordinates or addresses:
@@ -284,11 +276,6 @@ class GeoError(Exception):
 
 class GeoClient:
     """Client for geographic operations using geopy and external services."""
-
-    # Regex patterns for coordinate detection
-    COORD_PATTERN = re.compile(
-        r'^[-+]?([1-8]?\d(\.\d+)?|90(\.0+)?)\s*[,\s]\s*[-+]?(180(\.0+)?|((1[0-7]\d)|([1-9]?\d))(\.\d+)?)$'
-    )
 
     # Simpler pattern that's more permissive for parsing
     SIMPLE_COORD_PATTERN = re.compile(
@@ -570,64 +557,19 @@ class GeoClient:
             },
         }
 
-    def calculate_bbox(
-        self,
-        center_lat: float,
-        center_lng: float,
-        radius_km: float
+    def calculate_bounds(
+        self, center_lat: float, center_lng: float, radius_km: float
     ) -> dict:
-        """
-        Calculate bounding box from center point and radius.
-
-        Returns dict with bounds and GeoJSON representation.
-        """
+        """Calculate cardinal bounds for a bounded geocoding search."""
+        if not math.isfinite(radius_km) or radius_km <= 0:
+            raise GeoError("Search radius must be a positive finite distance")
         center = Point(center_lat, center_lng)
-
-        # Calculate the four cardinal points
-        north = geodesic(kilometers=radius_km).destination(center, 0)
-        south = geodesic(kilometers=radius_km).destination(center, 180)
-        east = geodesic(kilometers=radius_km).destination(center, 90)
-        west = geodesic(kilometers=radius_km).destination(center, 270)
-
-        min_lat = round(south.latitude, 6)
-        max_lat = round(north.latitude, 6)
-        min_lng = round(west.longitude, 6)
-        max_lng = round(east.longitude, 6)
-
-        # GeoJSON bbox is [west, south, east, north] = [minLng, minLat, maxLng, maxLat]
-        bbox = [min_lng, min_lat, max_lng, max_lat]
-
-        # GeoJSON Polygon (coordinates are [lng, lat] order)
-        geojson = {
-            "type": "Feature",
-            "bbox": bbox,
-            "geometry": {
-                "type": "Polygon",
-                "coordinates": [[
-                    [min_lng, min_lat],  # SW
-                    [max_lng, min_lat],  # SE
-                    [max_lng, max_lat],  # NE
-                    [min_lng, max_lat],  # NW
-                    [min_lng, min_lat],  # SW (close)
-                ]]
-            },
-            "properties": {
-                "center": {"latitude": center_lat, "longitude": center_lng},
-                "radius_km": radius_km,
-            }
-        }
-
+        distance = geodesic(kilometers=radius_km)
         return {
-            "center": {"latitude": center_lat, "longitude": center_lng},
-            "radius_km": radius_km,
-            "bounds": {
-                "north": max_lat,
-                "south": min_lat,
-                "east": max_lng,
-                "west": min_lng,
-            },
-            "bbox": bbox,
-            "geojson": geojson,
+            "north": distance.destination(center, 0).latitude,
+            "south": distance.destination(center, 180).latitude,
+            "east": distance.destination(center, 90).longitude,
+            "west": distance.destination(center, 270).longitude,
         }
 
     def route(
@@ -715,39 +657,6 @@ class GeoClient:
             "has_highway": summary.get("has_highway", False),
             "legs": legs,
         }
-
-    def geolocate_ip(self, ip: Optional[str] = None) -> dict:
-        """
-        Get geographic location from IP address.
-
-        If ip is None, uses the current public IP.
-        """
-        try:
-            if ip:
-                url = f"http://ip-api.com/json/{ip}"
-            else:
-                url = "http://ip-api.com/json/"
-
-            response = self._session.get(url, timeout=10)
-            data = response.json()
-
-            if data.get("status") == "fail":
-                raise GeoError(f"IP geolocation failed: {data.get('message', 'Unknown error')}")
-
-            return {
-                "ip": data.get("query"),
-                "latitude": data.get("lat"),
-                "longitude": data.get("lon"),
-                "city": data.get("city"),
-                "region": data.get("regionName"),
-                "country": data.get("country"),
-                "country_code": data.get("countryCode"),
-                "timezone": data.get("timezone"),
-                "isp": data.get("isp"),
-                "org": data.get("org"),
-            }
-        except requests.RequestException as e:
-            raise GeoError(f"IP geolocation request failed: {e}")
 
 
 def _bearing_to_cardinal(bearing: float) -> str:
@@ -892,7 +801,7 @@ def _viewbox_around(client: "GeoClient", near: str, within: float, unit: str) ->
     """
     lat, lng, _ = client.parse_location(near)
     radius_km = _to_kilometers(within, unit)
-    bounds = client.calculate_bbox(lat, lng, radius_km)["bounds"]
+    bounds = client.calculate_bounds(lat, lng, radius_km)
 
     return [(bounds["south"], bounds["west"]), (bounds["north"], bounds["east"])]
 
@@ -1679,169 +1588,7 @@ def cmd_destination(client: GeoClient, args: argparse.Namespace) -> int:
 
         return 0
     except GeoError as e:
-        print(f"Error: {e}")
-        return 1
-
-
-def cmd_validate(client: GeoClient, args: argparse.Namespace) -> int:
-    """Handle the validate command."""
-    try:
-        lat, lng = client._parse_coordinates(args.coordinates)
-        result = client.validate_coordinates(lat, lng)
-
-        if result["valid"]:
-            result["maps_url"] = _maps_url(lat, lng)
-
-        if args.json:
-            import json
-            print(json.dumps(result, indent=2))
-        else:
-            status = "VALID" if result["valid"] else "INVALID"
-            status_icon = "+" if result["valid"] else "x"
-
-            print(f"\n  Coordinate Validation: [{status_icon}] {status}")
-            print("  " + "=" * 58)
-            print(f"  Input:      {args.coordinates}")
-            print(f"  Latitude:   {result['latitude']} ({result['lat_hemisphere']})")
-            print(f"  Longitude:  {result['longitude']} ({result['lng_hemisphere']})")
-            if result["valid"]:
-                print(f"  Map:        {result['maps_url']}")
-
-            if result["errors"]:
-                print()
-                print("  Errors:")
-                for err in result["errors"]:
-                    print(f"    - {err}")
-
-            if result["warnings"]:
-                print()
-                print("  Warnings:")
-                for warn in result["warnings"]:
-                    print(f"    - {warn}")
-
-            print()
-
-        return 0 if result["valid"] else 1
-    except GeoError as e:
-        print(f"Error: {e}")
-        return 1
-
-
-def cmd_ip(client: GeoClient, args: argparse.Namespace) -> int:
-    """Handle the IP geolocation command."""
-    try:
-        result = client.geolocate_ip(args.ip)
-        maps_url = _maps_url(result['latitude'], result['longitude'])
-
-        if args.geojson:
-            where = ", ".join(
-                part for part in (result.get("city"), result.get("region"), result.get("country"))
-                if part
-            )
-            _print_geojson(_geojson_point(
-                result["latitude"], result["longitude"],
-                {"title": result.get("ip"), "description": where,
-                 "isp": result.get("isp"), "timezone": result.get("timezone"),
-                 "marker-color": "#756bb1"},
-            ))
-        elif args.json:
-            import json
-            result["maps_url"] = maps_url
-            print(json.dumps(result, indent=2))
-        else:
-            ip_display = result["ip"]
-            if not args.ip:
-                ip_display += " (your IP)"
-
-            print(f"\n  IP Geolocation: {ip_display}")
-            print("  " + "=" * 58)
-            print(f"  Latitude:   {result['latitude']}")
-            print(f"  Longitude:  {result['longitude']}")
-            print(f"  Map:        {maps_url}")
-            print()
-            print(f"  City:       {result['city']}")
-            print(f"  Region:     {result['region']}")
-            print(f"  Country:    {result['country']} ({result['country_code']})")
-            print(f"  Timezone:   {result['timezone']}")
-            print()
-            if result.get("isp"):
-                print(f"  ISP:        {result['isp']}")
-            if result.get("org"):
-                print(f"  Org:        {result['org']}")
-            print()
-
-        return 0
-    except GeoError as e:
-        print(f"Error: {e}")
-        return 1
-
-
-def cmd_bbox(client: GeoClient, args: argparse.Namespace) -> int:
-    """Handle the bbox command."""
-    try:
-        # Parse center location (smart parsing)
-        center_lat, center_lng, center_addr = client.parse_location(args.center)
-
-        # Convert radius to km based on unit
-        radius = args.radius
-        unit = args.unit.lower()
-
-        if unit in ("mi", "miles"):
-            radius_km = radius * 1.60934
-        elif unit in ("km", "kilometers"):
-            radius_km = radius
-        elif unit in ("m", "meters"):
-            radius_km = radius / 1000
-        elif unit in ("ft", "feet"):
-            radius_km = radius * 0.0003048
-        else:
-            radius_km = radius * 1.60934  # default to miles
-
-        result = client.calculate_bbox(center_lat, center_lng, radius_km)
-        maps_url = _maps_url(center_lat, center_lng)
-
-        if args.geojson:
-            geojson = dict(result["geojson"])
-            geojson["properties"] = {
-                **(geojson.get("properties") or {}),
-                "title": center_addr or f"{center_lat}, {center_lng}",
-                "description": f"{args.radius} {args.unit} radius",
-                "stroke": "#3182bd",
-                "fill": "#3182bd",
-                "fill-opacity": 0.15,
-            }
-            _print_geojson(geojson)
-        elif args.json:
-            result["maps_url"] = maps_url
-            if center_addr:
-                result["center"]["address"] = center_addr
-            print(json.dumps(result, indent=2))
-        else:
-            center_display = center_addr or f"{center_lat}, {center_lng}"
-            b = result["bounds"]
-            bbox_str = f"{b['west']},{b['south']},{b['east']},{b['north']}"
-
-            print(f"\n  Bounding Box")
-            print("  " + "=" * 58)
-            print(f"  Center:     {center_display}")
-            if center_addr:
-                print(f"              ({center_lat}, {center_lng})")
-            print(f"  Radius:     {args.radius} {args.unit}")
-            print(f"  Map:        {maps_url}")
-            print()
-            print(f"  Bounds:")
-            print(f"    North:    {b['north']}")
-            print(f"    South:    {b['south']}")
-            print(f"    East:     {b['east']}")
-            print(f"    West:     {b['west']}")
-            print()
-            print(f"  bbox:       {bbox_str}")
-            print()
-
-        return 0
-    except GeoError as e:
-        print(f"Error: {e}")
-        return 1
+        return _fail(str(e))
 
 
 # ============================================================================
@@ -2137,89 +1884,7 @@ def main() -> int:
         choices=["mi", "miles", "km", "kilometers", "m", "meters", "ft", "feet", "nm"],
         help="Distance unit (default: miles)"
     )
-    dest_parser.add_argument(
-        "--json", "-j",
-        action="store_true",
-        help="Output as JSON"
-    )
-    dest_parser.add_argument(
-        "--geojson", "-g",
-        action="store_true",
-        help="Output as GeoJSON (pipe into 'geo.py interact --geojson -')"
-    )
-
-    # validate command
-    validate_parser = subparsers.add_parser(
-        "validate",
-        help="Validate coordinates",
-        description="Check if coordinates are valid lat/lng values."
-    )
-    validate_parser.add_argument(
-        "coordinates",
-        help="Coordinates to validate as 'lat,lng'"
-    )
-    validate_parser.add_argument(
-        "--json", "-j",
-        action="store_true",
-        help="Output as JSON"
-    )
-
-    # ip command
-    ip_parser = subparsers.add_parser(
-        "ip",
-        help="Get location from IP address",
-        description="Geolocate an IP address (or your current IP if none specified)."
-    )
-    ip_parser.add_argument(
-        "ip",
-        nargs="?",
-        default=None,
-        help="IP address to locate (optional, defaults to your IP)"
-    )
-    ip_parser.add_argument(
-        "--json", "-j",
-        action="store_true",
-        help="Output as JSON"
-    )
-    ip_parser.add_argument(
-        "--geojson", "-g",
-        action="store_true",
-        help="Output as GeoJSON (pipe into 'geo.py interact --geojson -')"
-    )
-
-    # bbox command
-    bbox_parser = subparsers.add_parser(
-        "bbox",
-        help="Calculate bounding box from center and radius",
-        description="Calculate a bounding box given a center point and radius. Returns GeoJSON."
-    )
-    bbox_parser.add_argument(
-        "--center", "-c",
-        required=True,
-        help="Center point (coordinates or address)"
-    )
-    bbox_parser.add_argument(
-        "--radius", "-r",
-        type=float,
-        required=True,
-        help="Radius from center"
-    )
-    bbox_parser.add_argument(
-        "--unit", "-u",
-        default="miles",
-        choices=["mi", "miles", "km", "kilometers", "m", "meters", "ft", "feet"],
-        help="Radius unit (default: miles)"
-    )
-    bbox_parser.add_argument(
-        "--geojson", "-g",
-        action="store_true",
-        help="Output GeoJSON only (with --json) or include GeoJSON (without --json)"
-    )
-    bbox_parser.add_argument(
-        "--json", "-j",
-        action="store_true",
-        help="Output as JSON"
-    )
+    _add_output_options(dest_parser)
 
     # Parse args, rescuing coordinates that begin with a negative latitude
     args = parser.parse_args(
@@ -2241,9 +1906,6 @@ def main() -> int:
         "route": cmd_route,
         "interact": cmd_interact,
         "destination": cmd_destination,
-        "validate": cmd_validate,
-        "ip": cmd_ip,
-        "bbox": cmd_bbox,
     }
 
     handler = commands.get(args.command)
