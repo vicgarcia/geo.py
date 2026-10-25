@@ -154,7 +154,7 @@ geo.py interact --center "Seattle" --zoom 12
 geo.py interact --marker "Space Needle:Start here" --marker "Pike Place Market"
 geo.py interact --geojson places.json --tiles light
 geo.py interact --center "Zermatt" --tiles satellite --zoom 14
-geo.py interact --center "Denver" --script viz.js --no-open
+geo.py interact --center "Denver" --no-open
 ```
 
 Anything that emits GeoJSON pipes straight in:
@@ -180,18 +180,6 @@ Features are styled from their properties using the
 | `dark` | Esri Dark Gray Canvas (max zoom 16) |
 | `satellite` | Esri World Imagery |
 | `terrain` | Esri World Topo |
-
-**Custom JavaScript** (`--script`) runs after the map and data are ready, with `map`,
-`L`, `layers` (`layers.data` is the loaded GeoJSON layer) and `geo` (the raw
-FeatureCollection) in scope:
-
-```javascript
-// viz.js
-L.circle([37.9, -122.06], {radius: 1500, color: 'crimson'})
- .addTo(map).bindPopup('coverage area');
-console.log(geo.features.length + ' features');
-map.fitBounds(layers.data.getBounds());
-```
 
 The server binds to `127.0.0.1` only, picks a free port if the requested one is busy,
 and runs until you press Ctrl+C.

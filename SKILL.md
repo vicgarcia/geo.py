@@ -72,7 +72,7 @@ Serve an interactive Leaflet map on localhost (blocks until Ctrl+C):
 geo.py interact --center "Seattle" --zoom 12
 geo.py interact --marker "Space Needle:Start here" --marker "Pike Place Market"
 geo.py route --from "Seattle" --to "Portland, OR" --geojson | geo.py interact --geojson -
-geo.py interact --center "Zermatt" --tiles satellite --script viz.js
+geo.py interact --center "Zermatt" --tiles satellite
 ```
 
 Tiles: `osm` (default), `topo`, `cyclosm`, `humanitarian`, `light`, `dark`,
@@ -83,7 +83,7 @@ hangs. It prints the URL it bound to - report that URL to the user:
 
 ```
   Serving map at http://127.0.0.1:8765/
-  3 features loaded  |  script: yes
+  3 features loaded
 ```
 
 Defaults to port 8765 and **falls back to a free port if that is taken**, so read the
@@ -91,8 +91,7 @@ printed URL rather than assuming 8765. `--no-open` suppresses launching a browse
 `--marker` splits on the *first* colon: `"LOCATION:Popup text"`.
 
 Styling follows the simplestyle-spec (`marker-color`, `stroke`, `fill`, ...), with
-`title`/`description` becoming the popup. `--script FILE.js` runs after load with
-`map`, `L`, `layers` and `geo` in scope for anything the flags don't cover.
+`title`/`description` becoming the popup.
 
 ### destination
 Calculate endpoint from start + bearing + distance:
@@ -235,8 +234,7 @@ just endpoints. `--geojson` takes precedence over `--json` when both are passed.
 `interact --geojson` accepts a FeatureCollection, a bare Feature, a raw geometry, or `-`
 for stdin, and is repeatable. Invalid feature/geometry structure, non-finite coordinates,
 and unclosed/degenerate rings are rejected before serving. It rebuilds the collection from `features`, so **foreign
-top-level members are dropped** - put configuration in a `--script` file, not alongside
-`features`.
+top-level members are dropped**.
 
 ## JSON Output
 

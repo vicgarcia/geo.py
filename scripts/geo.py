@@ -62,7 +62,6 @@ Examples:
   geo.py interact --center "Seattle" --zoom 12
   geo.py interact --marker "Space Needle:Start here" --marker "Pike Place Market"
   geo.py route --from "Seattle" --to "Portland, OR" --geojson | geo.py interact --geojson -
-  geo.py interact --center "Denver" --script viz.js
   geo.py interact --center "Zermatt" --tiles topo --zoom 14
   geo.py interact --center "Manhattan" --tiles satellite
 
@@ -169,7 +168,6 @@ MAP_PAGE = """\
 <script>
 const CENTER = __CENTER__;
 const ZOOM = __ZOOM__;
-const HAS_SCRIPT = __HAS_SCRIPT__;
 
 const map = L.map('map');
 L.tileLayer(__TILE_URL__, {
@@ -177,9 +175,7 @@ L.tileLayer(__TILE_URL__, {
   attribution: __TILE_ATTRIBUTION__
 }).addTo(map);
 
-// Layers keyed for --script to reach: layers.data is the loaded GeoJSON
-const layers = {};
-let geo = null;
+let dataLayer = null;
 
 function esc(value) {
   return String(value).replace(/[&<>"']/g, c => ({
@@ -234,7 +230,7 @@ function popupFor(feature, layer) {
 }
 
 function frame() {
-  const bounds = layers.data && layers.data.getBounds();
+  const bounds = dataLayer && dataLayer.getBounds();
   if (CENTER) {
     map.setView(CENTER, ZOOM === null ? 13 : ZOOM);
   } else if (bounds && bounds.isValid()) {
@@ -248,19 +244,12 @@ function frame() {
 fetch('data.json')
   .then(r => r.json())
   .then(data => {
-    geo = data;
     if (data.features && data.features.length) {
-      layers.data = L.geoJSON(data, {
+      dataLayer = L.geoJSON(data, {
         style: styleFor, pointToLayer: markerFor, onEachFeature: popupFor
       }).addTo(map);
     }
     frame();
-    // Load user script last so map, L, layers and geo are all ready
-    if (HAS_SCRIPT) {
-      const tag = document.createElement('script');
-      tag.src = 'script.js';
-      document.body.appendChild(tag);
-    }
   })
   .catch(err => console.error('geo.py: failed to load data.json', err));
 </script>
@@ -1107,12 +1096,11 @@ def _load_geojson_inputs(sources: list) -> list:
     return features
 
 
-def _serve_map(page: str, data: dict, script: Optional[str], port: int, open_browser: bool) -> int:
+def _serve_map(page: str, data: dict, port: int, open_browser: bool) -> int:
     """Serve the Leaflet page on localhost until interrupted."""
     routes = {
         "/": ("text/html; charset=utf-8", page.encode()),
         "/data.json": ("application/json", json.dumps(data).encode()),
-        "/script.js": ("application/javascript", (script or "").encode()),
     }
 
     class Handler(http.server.BaseHTTPRequestHandler):
@@ -1143,8 +1131,7 @@ def _serve_map(page: str, data: dict, script: Optional[str], port: int, open_bro
     url = f"http://127.0.0.1:{server.server_address[1]}/"
     feature_count = len(data.get("features") or [])
     print(f"\n  Serving map at {url}")
-    print(f"  {feature_count} feature{'s' if feature_count != 1 else ''} loaded"
-          + ("  |  script: yes" if script else ""))
+    print(f"  {feature_count} feature{'s' if feature_count != 1 else ''} loaded")
     print("  Press Ctrl+C to stop\n", flush=True)
 
     if open_browser:
@@ -1186,10 +1173,6 @@ def cmd_interact(client: GeoClient, args: argparse.Namespace) -> int:
             lat, lng, _ = client.parse_location(args.center)
             center = [lat, lng]
 
-        script = None
-        if args.script:
-            script = _read_text(args.script)
-
         tiles = TILE_LAYERS[args.tiles]
         if args.zoom is not None and args.zoom > tiles["max_zoom"]:
             print(f"  Note: {args.tiles} tiles stop at zoom {tiles['max_zoom']}")
@@ -1197,12 +1180,11 @@ def cmd_interact(client: GeoClient, args: argparse.Namespace) -> int:
         page = (MAP_PAGE
                 .replace("__CENTER__", json.dumps(center))
                 .replace("__ZOOM__", json.dumps(args.zoom))
-                .replace("__HAS_SCRIPT__", "true" if script else "false")
                 .replace("__TILE_URL__", json.dumps(tiles["url"]))
                 .replace("__TILE_ATTRIBUTION__", json.dumps(tiles["attribution"]))
                 .replace("__TILE_MAX_ZOOM__", str(tiles["max_zoom"])))
 
-        return _serve_map(page, _geojson_collection(features), script,
+        return _serve_map(page, _geojson_collection(features),
                           args.port, not args.no_open)
     except GeoError as e:
         return _fail(str(e))
@@ -1858,10 +1840,6 @@ def main() -> int:
         "--marker", "-m",
         action="append",
         help="Marker as 'LOCATION:Popup text' (repeatable)"
-    )
-    interact_parser.add_argument(
-        "--script", "-s",
-        help="JavaScript file run after load, with map, L, layers and geo in scope"
     )
     interact_parser.add_argument(
         "--tiles", "-t",

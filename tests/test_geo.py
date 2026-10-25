@@ -241,11 +241,11 @@ class CommandTests(OfflineCase):
                 patch.object(geo, "_serve_map", return_value=0) as serve:
             code, _, err = self.cli("interact", "--geojson", "-", "--no-open")
         self.assertEqual(code, 0, err)
-        page, collection, script, port, open_browser = serve.call_args.args
+        page, collection, port, open_browser = serve.call_args.args
         self.assertIn("L.map", page)
         self.assertNotIn("__CENTER__", page)
         self.assertEqual(collection["features"][0]["geometry"], data)
-        self.assertIsNone(script)
+        self.assertNotIn("script.js", page)
         self.assertEqual(port, 8765)
         self.assertFalse(open_browser)
 
