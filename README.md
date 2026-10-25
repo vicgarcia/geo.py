@@ -110,9 +110,17 @@ geo.py route --from "Seattle" --to "Portland, OR"
 geo.py route --from "Times Square" --to "Central Park" --mode walking --unit km
 geo.py route --from "Boston" --to "NYC" --via "Hartford, CT"
 geo.py route --from "Seattle" --to "Bellevue, WA" --no-steps
+geo.py route --from "Hollywood, FL" --to "Islamorada, FL" --avoid tolls,highways
+geo.py route --from "Hollywood, FL" --to "Islamorada, FL" --shortest
 ```
 
 Travel modes: `driving` (default), `walking`, `cycling`, `truck`.
+
+Route options work with any mode:
+- `--avoid tolls,highways,ferries` - any combination, comma separated or repeated. These are
+  hard exclusions; when no other route exists the result still uses them and a warning
+  goes to stderr.
+- `--shortest` - optimise for distance instead of time.
 
 Output:
 ```

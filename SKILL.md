@@ -54,9 +54,14 @@ geo.py route --from "Seattle" --to "Portland, OR"
 geo.py route --from "Times Square" --to "Central Park" --mode walking --unit km
 geo.py route --from "Boston" --to "NYC" --via "Hartford, CT" --no-steps
 geo.py route --from "Seattle" --to "Bellevue, WA" --json
+geo.py route --from "Hollywood, FL" --to "Islamorada, FL" --avoid tolls,highways
+geo.py route --from "Hollywood, FL" --to "Islamorada, FL" --shortest
 ```
 
-Modes: `driving` (default), `walking`, `cycling`, `truck`.
+Modes: `driving` (default), `walking`, `cycling`, `truck`. Options work with any mode:
+`--avoid tolls,highways,ferries` (hard exclusions - if no other route exists the result
+still uses them and stderr warns) and `--shortest` (distance instead of time). JSON output
+echoes them as `avoid` and `shortest`.
 
 Output includes total distance, duration, whether the route uses tolls/ferries/highways,
 a Google Maps directions link, and numbered turn-by-turn steps. Use `--no-steps` when you

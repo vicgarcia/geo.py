@@ -159,8 +159,17 @@ class ClientTests(OfflineCase):
         self.assertEqual(result["legs"][0]["steps"][-1]["cumulative_distance"]["kilometers"], 2)
         self.assertEqual(self.session.post.call_args.kwargs["json"]["costing"], "bicycle")
         response.raise_for_status.assert_called_once()
+        self.assertNotIn("costing_options", self.session.post.call_args.kwargs["json"])
         summary = self.client.route([(0, 0), (0, 1)], steps=False)
         self.assertEqual(summary["legs"][0]["steps"], [])
+        avoided = self.client.route([(0, 0), (0, 1)], mode="truck",
+                                    avoid=("highways", "tolls"), shortest=True)
+        self.assertEqual(self.session.post.call_args.kwargs["json"]["costing_options"],
+                         {"truck": {"exclude_tolls": True, "exclude_highways": True,
+                                    "shortest": True}})
+        self.assertEqual((avoided["avoid"], avoided["shortest"]), (["tolls", "highways"], True))
+        with self.assertRaises(geo.GeoError):
+            self.client.route([(0, 0), (0, 1)], avoid=("bridges",))
         response.raise_for_status.side_effect = geo.requests.HTTPError("503")
         with self.assertRaises(geo.GeoError):
             self.client.route([(0, 0), (0, 1)])
@@ -250,6 +259,22 @@ class CommandTests(OfflineCase):
         self.assert_failure("ip", "8.8.8.8")
         self.assert_failure("validate", "40.7128,-74.0060")
         self.assert_failure("destination", "--start", "0,0", "--bearing", "90", "--distance", "1")
+
+    def test_route_avoid_options_and_unavoidable_warning(self):
+        self.session.post.return_value.json.return_value = {"trip": {
+            "summary": {"length": 1, "time": 60, "has_toll": True},
+            "legs": [{"summary": {"length": 1, "time": 60}, "maneuvers": []}],
+        }}
+        code, out, err = self.cli("route", "--from", "0,0", "--to", "0,1",
+                                  "--avoid", "tolls,highways", "--avoid", "ferries", "--shortest")
+        self.assertEqual(code, 0, err)
+        self.assertIn("Options:    avoid tolls, highways, ferries, shortest distance", out)
+        self.assertIn("no route avoids tolls", err)
+        sent = self.session.post.call_args.kwargs["json"]["costing_options"]["auto"]
+        self.assertEqual(set(sent), {"exclude_tolls", "exclude_highways", "exclude_ferries", "shortest"})
+        code, _, err = self.cli("route", "--from", "0,0", "--to", "0,1", "--avoid", "bridges")
+        self.assertEqual(code, 2)
+        self.assertIn("can avoid tolls, highways, ferries", err)
 
     def test_map_input_mistakes_are_clear_errors(self):
         with patch.object(geo, "_serve_map") as serve:

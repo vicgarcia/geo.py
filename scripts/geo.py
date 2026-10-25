@@ -44,6 +44,10 @@ AMBIGUITY_RATIO = 0.85
 # can run past 100k positions, which makes the map sluggish and the JSON huge.
 MAX_BOUNDARY_POINTS = 2000
 
+# Things a route can avoid. These are hard exclusions in Valhalla; its use_*
+# preferences are only weightings and still routed through tolls.
+AVOIDABLE = ("tolls", "highways", "ferries")
+
 # "lat,lng" or "lat lng". Range checks happen after parsing, in coordinate_errors().
 COORDINATE_PATTERN = re.compile(r"^([-+]?\d+(?:\.\d*)?)\s*[,\s]\s*([-+]?\d+(?:\.\d*)?)$")
 
@@ -66,6 +70,8 @@ Examples:
   geo.py route --from "Seattle" --to "Portland, OR"
   geo.py route --from "Times Square" --to "Central Park" --mode walking
   geo.py route --from "Boston" --to "NYC" --via "Hartford, CT" --json
+  geo.py route --from "Hollywood, FL" --to "Islamorada, FL" --avoid tolls,highways
+  geo.py route --from "Hollywood, FL" --to "Islamorada, FL" --shortest
 
   geo.py interact --center "Seattle" --zoom 12
   geo.py interact --marker "Space Needle:Start here" --marker "Pike Place Market"
@@ -495,13 +501,17 @@ class GeoClient:
         self,
         waypoints: list[tuple[float, float]],
         mode: str = "driving",
-        steps: bool = True
+        steps: bool = True,
+        avoid: tuple = (),
+        shortest: bool = False,
     ) -> dict:
         """
         Get turn-by-turn directions along a list of waypoints.
 
         waypoints: [(lat, lng), ...] in travel order, at least two.
         mode: one of COSTING_MODES.
+        avoid: any of AVOIDABLE, excluded outright when another route exists.
+        shortest: optimise for distance instead of time.
         """
         costing = self.COSTING_MODES.get(mode)
         if not costing:
@@ -511,12 +521,22 @@ class GeoClient:
             )
         if len(waypoints) < 2:
             raise GeoError("Routing needs at least a start and an end point")
+        unknown = sorted(set(avoid) - set(AVOIDABLE))
+        if unknown:
+            raise GeoError(f"Cannot avoid {', '.join(unknown)} "
+                           f"(choose from {', '.join(AVOIDABLE)})")
+        avoid = [name for name in AVOIDABLE if name in avoid]
 
         payload = {
             "locations": [{"lat": lat, "lon": lng} for lat, lng in waypoints],
             "costing": costing,
             "units": "kilometers",
         }
+        options = {f"exclude_{name}": True for name in avoid}
+        if shortest:
+            options["shortest"] = True
+        if options:
+            payload["costing_options"] = {costing: options}
 
         try:
             response = self._session.post(
@@ -575,6 +595,8 @@ class GeoClient:
         summary = trip["summary"]
         return {
             "mode": mode,
+            "avoid": avoid,
+            "shortest": shortest,
             "distance": _distance_units(summary["length"]),
             "duration_seconds": round(summary["time"]),
             "has_toll": summary.get("has_toll", False),
@@ -1399,8 +1421,19 @@ def cmd_route(client: GeoClient, args: argparse.Namespace) -> int:
             })
 
         waypoints = [(s["latitude"], s["longitude"]) for s in stops]
-        result = client.route(waypoints, mode=args.mode, steps=not args.no_steps)
+        result = client.route(waypoints, mode=args.mode, steps=not args.no_steps,
+                              avoid=tuple(args.avoid or ()), shortest=args.shortest)
         directions_url = _directions_url(waypoints, args.mode)
+
+        # Exclusions give way when nothing else connects the stops (the Keys, an island)
+        for name, present in [("tolls", result["has_toll"]),
+                              ("highways", result["has_highway"]),
+                              ("ferries", result["has_ferry"])]:
+            if present and name in result["avoid"]:
+                print(f"Warning: no route avoids {name}; this one still uses them",
+                      file=sys.stderr)
+        options = ([f"avoid {', '.join(result['avoid'])}"] if result["avoid"] else []) + \
+                  (["shortest distance"] if result["shortest"] else [])
 
         if args.geojson:
             features = []
@@ -1419,6 +1452,7 @@ def cmd_route(client: GeoClient, args: argparse.Namespace) -> int:
                         f", {_format_duration(leg['duration_seconds'])}"
                     ),
                     "mode": result["mode"],
+                    "options": ", ".join(options) or None,
                     "uses": uses or None,
                     "steps": len(leg["steps"]) or None,
                     "stroke": "#3182bd",
@@ -1473,6 +1507,8 @@ def cmd_route(client: GeoClient, args: argparse.Namespace) -> int:
             print()
             print(f"  Distance:   {_format_distance(result['distance'], args.unit)}")
             print(f"  Duration:   {_format_duration(result['duration_seconds'])}")
+            if options:
+                print(f"  Options:    {', '.join(options)}")
 
             flags = [
                 name for name, present in [
@@ -1573,6 +1609,16 @@ def _port(value: str) -> int:
     if not 0 <= port <= 65535:
         raise argparse.ArgumentTypeError(f"port must be 0-65535, got {port}")
     return port
+
+
+def _avoid_list(value: str) -> list:
+    """argparse type for --avoid: 'tolls,highways' -> ['tolls', 'highways']."""
+    names = [name.strip().lower() for name in value.split(",") if name.strip()]
+    unknown = [name for name in names if name not in AVOIDABLE]
+    if unknown or not names:
+        raise argparse.ArgumentTypeError(
+            f"can avoid {', '.join(AVOIDABLE)}, got {value!r}")
+    return names
 
 
 def _add_output_options(parser: argparse.ArgumentParser, geojson: bool = True) -> None:
@@ -1730,6 +1776,18 @@ def main() -> int:
         "--no-steps", "-s",
         action="store_true",
         help="Show only the summary, no turn-by-turn steps"
+    )
+    route_parser.add_argument(
+        "--avoid", "-a",
+        action="extend",
+        type=_avoid_list,
+        metavar="WHAT",
+        help="Avoid tolls, highways and/or ferries (comma separated or repeated)"
+    )
+    route_parser.add_argument(
+        "--shortest",
+        action="store_true",
+        help="Optimise for distance instead of time"
     )
     _add_output_options(route_parser)
 
