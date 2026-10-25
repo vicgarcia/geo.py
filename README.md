@@ -1,9 +1,10 @@
 # geo.py
 
-A CLI tool for working with latitude/longitude and geography. Built for agents and humans who need to work with geographic data.
+A Python CLI for working with latitude/longitude and geography. Built for agents and humans who need to work with geographic data.
 
 ## Features
 
+- **Single-file executable** - Uses `uv run --script` with inline dependencies (PEP 723)
 - **Geocode** - Convert addresses to coordinates
 - **Reverse Geocode** - Convert coordinates to addresses
 - **Distance** - Calculate distance between two points
@@ -13,27 +14,26 @@ A CLI tool for working with latitude/longitude and geography. Built for agents a
 
 **No API key required.** Uses OpenStreetMap's Nominatim for geocoding and Valhalla (FOSSGIS) for routing.
 
+## Prerequisites
+
+- Python 3.10+
+- [uv](https://github.com/astral-sh/uv) package manager
+
 ## Installation
 
-### Install for uv
-
 ```bash
-# Clone the repo
-git clone https://github.com/vicgarcia/geo.py
+# Clone and make executable
+git clone https://github.com/vicgarcia/geo.py.git
+cd geo.py
+chmod +x geo.py
 
-# Run directly (dependencies auto-installed)
-uv run --script scripts/geo.py --help
+# Run (dependencies install on first run)
+./geo.py --help
 
-# Install in PATH
-cp scripts/geo.py ~/.local/bin/geo.py
+# Install
+cp geo.py ~/.local/bin
 chmod +x ~/.local/bin/geo.py
-geo.py --help
 ```
-
-### Install for Claude Desktop
-
-Download `geo-v*.zip` from [Releases](https://github.com/vicgarcia/geo.py/releases).
-Install in Claude Desktop as a skill.
 
 ## Commands
 
@@ -266,13 +266,11 @@ three distinct vertices; it does not guarantee topology preservation.
 
 ## Development
 
-Run the offline regression suite (service calls are mocked):
+Run the offline regression suite (service calls are mocked, network access is refused):
 
 ```bash
-uv run --with 'geopy>=2.4.0' --with 'requests>=2.31.0' python -m unittest discover -s tests -v
+uv run --with 'geopy>=2.4.0' --with 'requests>=2.31.0' python -m unittest discover -v
 ```
-
-CI runs this suite before creating a release.
 
 ## Examples for Agents
 
@@ -293,7 +291,7 @@ Managed automatically by `uv` via PEP 723 inline script metadata.
 
 ## Agent Skill
 
-This project includes a `SKILL.md` file for use with AI coding agents.
+This project includes a `SKILL.md` file for use with AI coding agents (Claude Code, etc.). The skill enables natural language geocoding, directions, distances, and maps.
 
 ### Installation
 
@@ -301,13 +299,18 @@ This project includes a `SKILL.md` file for use with AI coding agents.
 # Create skills directory
 mkdir -p /path/to/agent/skills/geo
 
-# Copy skill files
-cp SKILL.md /path/to/agent/skills/geo/
-cp -r scripts/ /path/to/agent/skills/geo/
+# Copy SKILL.md
+cp /path/to/geo.py/SKILL.md /path/to/agent/skills/geo/SKILL.md
 
-# Ensure geo.py is in PATH
-cp scripts/geo.py ~/.local/bin/
+# Ensure geo.py is executable and in PATH
 chmod +x ~/.local/bin/geo.py
 ```
 
-The agent reads `SKILL.md` to understand available commands, parameters, and how to work with geographic data.
+### Usage with Claude Code
+
+Add the skills directory to your agent configuration, then interact naturally:
+
+> "How far is it from Hollywood, FL to Key West?"
+> "Give me driving directions to South Beach that avoid tolls"
+> "Show me a walking route from Times Square to Central Park on a map"
+> "Draw the outline of Colorado on a map"

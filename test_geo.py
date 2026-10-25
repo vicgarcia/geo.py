@@ -11,7 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 
-SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "geo.py"
+SCRIPT = Path(__file__).resolve().parent / "geo.py"
 SPEC = importlib.util.spec_from_file_location("geo_cli_under_test", SCRIPT)
 geo = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(geo)

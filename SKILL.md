@@ -1,6 +1,6 @@
 ---
 name: geo
-description: CLI tool for geography and maps - geocoding, reverse geocoding, distance and bearing, turn-by-turn directions, boundary polygons, GeoJSON output, and an interactive Leaflet map served on localhost
+description: Geography and maps from the command line. Use when the user wants to turn an address into coordinates or back, measure distance and bearing between places, get driving or walking directions (optionally avoiding tolls, highways or ferries), outline a city/state/country boundary, or see any of it on an interactive map served on localhost. Covers geocode, reverse, distance, route, and interact, with JSON and GeoJSON output.
 compatibility: Requires 'geo.py' script in PATH. No API keys needed. Uses Nominatim (OpenStreetMap), Valhalla (FOSSGIS), and OSM/Esri tiles.
 ---
 
