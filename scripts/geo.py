@@ -39,6 +39,9 @@ CANDIDATE_LIMIT = 5
 # this close to the winner the query is a genuine toss-up, not a clear hit.
 AMBIGUITY_RATIO = 0.85
 
+# "lat,lng" or "lat lng". Range checks happen after parsing, in coordinate_errors().
+COORDINATE_PATTERN = re.compile(r"^([-+]?\d+(?:\.\d*)?)\s*[,\s]\s*([-+]?\d+(?:\.\d*)?)$")
+
 CLI_EPILOG = """\
 Examples:
   geo.py geocode "1600 Pennsylvania Ave, Washington DC"
@@ -262,11 +265,6 @@ class GeoError(Exception):
 class GeoClient:
     """Client for geographic operations using geopy and external services."""
 
-    # Simpler pattern that's more permissive for parsing
-    SIMPLE_COORD_PATTERN = re.compile(
-        r'^([-+]?\d+\.?\d*)\s*[,\s]\s*([-+]?\d+\.?\d*)$'
-    )
-
     # Public Valhalla instance run by FOSSGIS - no API key or account needed
     ROUTING_URL = "https://valhalla1.openstreetmap.de/route"
 
@@ -293,11 +291,11 @@ class GeoClient:
 
     def _looks_like_coordinates(self, location: str) -> bool:
         """Check if a string looks like lat,lng coordinates."""
-        return bool(self.SIMPLE_COORD_PATTERN.match(location.strip()))
+        return bool(COORDINATE_PATTERN.match(location.strip()))
 
     def _parse_coordinates(self, location: str) -> tuple[float, float]:
         """Parse a coordinate string into (lat, lng) tuple."""
-        match = self.SIMPLE_COORD_PATTERN.match(location.strip())
+        match = COORDINATE_PATTERN.match(location.strip())
         if not match:
             raise GeoError(f"Could not parse coordinates: {location}")
 
@@ -1454,10 +1452,6 @@ def cmd_route(client: GeoClient, args: argparse.Namespace) -> int:
 # Main CLI
 # ============================================================================
 
-COORDINATE_TOKEN = re.compile(
-    r"^[-+]?\d{1,3}(?:\.\d+)?\s*[,\s]\s*[-+]?\d{1,3}(?:\.\d+)?$"
-)
-
 
 def _value_option_strings(parser: argparse.ArgumentParser) -> set:
     """Collect every option string that takes a value, subcommands included."""
@@ -1485,7 +1479,7 @@ def _normalize_coordinate_args(argv: list, value_options: set) -> list:
     positionals = []
 
     for token in argv:
-        if token.startswith("-") and COORDINATE_TOKEN.match(token):
+        if token.startswith("-") and COORDINATE_PATTERN.match(token):
             previous = normalized[-1] if normalized else ""
             if previous in value_options:
                 normalized[-1] = f"{previous}={token}"

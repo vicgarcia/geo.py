@@ -118,6 +118,10 @@ class ClientTests(OfflineCase):
         self.assertTrue(self.client.coordinate_errors(float("nan"), 0))
         with self.assertRaises(geo.GeoError):
             self.client.parse_location("91,181")
+        # argparse rescue and parsing share one pattern, so they agree on what counts
+        self.assertEqual(geo._normalize_coordinate_args(["reverse", "-33.,151"], set()),
+                         ["reverse", "--", "-33.,151"])
+        self.assertEqual(self.client.parse_location("-33.,151"), (-33.0, 151.0, None))
 
     def test_geodesic_distance_and_bearings(self):
         distance = self.client.calculate_distance(0, 0, 0, 1)
